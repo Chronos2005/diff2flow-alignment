@@ -13,6 +13,7 @@ import tempfile
 import shutil
 
 from cifar import DATA_ROOT
+from flow_obj import FlowModelObj
 
 
 class NFECounter:
@@ -22,6 +23,16 @@ class NFECounter:
     
     def reset(self):
         self.nfe = 0
+
+
+class DiffusersUNetWrapper(torch.nn.Module):
+    """Wrap diffusers UNet to return a tensor output."""
+    def __init__(self, unet):
+        super().__init__()
+        self.unet = unet
+
+    def forward(self, x, t, **kwargs):
+        return self.unet(x, t, return_dict=False)[0]
 
 
 class FlowMatchingEvaluator:
@@ -144,6 +155,46 @@ class DDPMEvaluator:
         return all_samples, avg_nfe
 
 
+class Diff2FlowEvaluator:
+    """Evaluator for Diff2Flow FlowModelObj"""
+    def __init__(self, model, device='cuda', num_steps=1000, method='euler'):
+        self.model = model
+        self.device = device
+        self.num_steps = num_steps
+        self.method = method
+        self.nfe_counter = NFECounter()
+
+    def generate_samples(self, num_samples, batch_size=128):
+        self.model.eval()
+        all_samples = []
+        self.nfe_counter.reset()
+
+        num_batches = (num_samples + batch_size - 1) // batch_size
+
+        for i in tqdm(range(num_batches), desc="Generating samples"):
+            current_batch_size = min(batch_size, num_samples - i * batch_size)
+            z = torch.randn(current_batch_size, 3, 32, 32, device=self.device)
+
+            with torch.no_grad():
+                samples = self.model.generate(
+                    z,
+                    sample_kwargs={"num_steps": self.num_steps, "method": self.method},
+                )
+
+            if self.method == "euler":
+                self.nfe_counter.nfe += current_batch_size * self.num_steps
+
+            # Denormalize from [-1, 1] to [0, 1]
+            samples = (samples + 1) / 2
+            samples = torch.clamp(samples, 0, 1)
+            all_samples.append(samples.cpu())
+
+        all_samples = torch.cat(all_samples, dim=0)[:num_samples]
+        avg_nfe = self.nfe_counter.nfe / num_samples if self.method == "euler" else float("nan")
+
+        return all_samples, avg_nfe
+
+
 def save_images_to_dir(images, output_dir):
     """Save tensor images to directory for FID calculation"""
     os.makedirs(output_dir, exist_ok=True)
@@ -189,6 +240,44 @@ def calculate_fid_from_tensors(real_images, generated_images, batch_size=50, dev
         )
     
     return fid_value
+
+
+def register_schedule_from_betas(flow_model, betas):
+    # betas: torch tensor [T]
+    betas = betas.detach().cpu().numpy()
+    alphas = 1.0 - betas
+    alphas_cumprod = (alphas).cumprod(axis=0)
+    alphas_cumprod_full = np.append(1.0, alphas_cumprod)
+
+    try:
+        model_device = next(flow_model.parameters()).device
+    except StopIteration:
+        model_device = torch.device("cpu")
+    to_torch = lambda x: torch.tensor(x, dtype=torch.float32, device=model_device)
+
+    flow_model.num_timesteps = int(betas.shape[0])
+    flow_model.register_buffer("betas", to_torch(betas))
+    flow_model.register_buffer("alphas_cumprod", to_torch(alphas_cumprod))
+    flow_model.register_buffer("alphas_cumprod_full", to_torch(alphas_cumprod_full))
+
+    flow_model.register_buffer("sqrt_alphas_cumprod", to_torch(np.sqrt(alphas_cumprod)))
+    flow_model.register_buffer("sqrt_one_minus_alphas_cumprod", to_torch(np.sqrt(1.0 - alphas_cumprod)))
+    flow_model.register_buffer("sqrt_alphas_cumprod_full", to_torch(np.sqrt(alphas_cumprod_full)))
+    flow_model.register_buffer("sqrt_one_minus_alphas_cumprod_full", to_torch(np.sqrt(1.0 - alphas_cumprod_full)))
+
+    flow_model.register_buffer("sqrt_recip_alphas_cumprod", to_torch(np.sqrt(1.0 / alphas_cumprod)))
+    flow_model.register_buffer("sqrt_recipm1_alphas_cumprod", to_torch(np.sqrt(1.0 / alphas_cumprod - 1.0)))
+
+    flow_model.register_buffer(
+        "rectified_alphas_cumprod_full",
+        flow_model.sqrt_alphas_cumprod_full /
+        (flow_model.sqrt_alphas_cumprod_full + flow_model.sqrt_one_minus_alphas_cumprod_full)
+    )
+    flow_model.register_buffer(
+        "rectified_sqrt_alphas_cumprod_full",
+        flow_model.sqrt_one_minus_alphas_cumprod_full /
+        (flow_model.sqrt_alphas_cumprod_full + flow_model.sqrt_one_minus_alphas_cumprod_full)
+    )
 
 
 def load_flow_matching_model(checkpoint_path, device='cuda'):
@@ -240,6 +329,35 @@ def load_ddpm_model(model_dir, device='cuda'):
     return model
 
 
+def load_diff2flow_model(checkpoint_path, pretrained_unet_dir, device='cuda',
+                         num_timesteps=1000, diffusion_parameterization='eps',
+                         enforce_zero_snr=False):
+    """Load a Diff2Flow FlowModelObj from checkpoint"""
+    unet = UNet2DModel.from_pretrained(pretrained_unet_dir)
+    wrapped_unet = DiffusersUNetWrapper(unet)
+
+    flow_model = FlowModelObj(
+        net_cfg=wrapped_unet,
+        schedule="linear",
+        diffusion_parameterization=diffusion_parameterization,
+        enforce_zero_snr=enforce_zero_snr,
+    )
+
+    scheduler = DDPMScheduler(num_train_timesteps=num_timesteps)
+    register_schedule_from_betas(flow_model, scheduler.betas)
+
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    if 'model_state_dict' in checkpoint:
+        flow_model.load_state_dict(checkpoint['model_state_dict'])
+    else:
+        flow_model.load_state_dict(checkpoint)
+
+    flow_model.to(device)
+    flow_model.eval()
+
+    return flow_model
+
+
 def evaluate_model(model_path, model_type='flow_matching', num_samples=10000, 
                    batch_size=128, device='cuda', **kwargs):
     """
@@ -247,7 +365,7 @@ def evaluate_model(model_path, model_type='flow_matching', num_samples=10000,
     
     Args:
         model_path: Path to model checkpoint or directory
-        model_type: 'flow_matching' or 'ddpm'
+        model_type: 'flow_matching', 'ddpm', or 'diff2flow'
         num_samples: Number of samples to generate for FID calculation
         batch_size: Batch size for generation
         device: Device to use
@@ -264,8 +382,17 @@ def evaluate_model(model_path, model_type='flow_matching', num_samples=10000,
     print(f"Loading {model_type} model from {model_path}...")
     if model_type == 'flow_matching':
         model = load_flow_matching_model(model_path, device=device)
-    else:  # ddpm
+    elif model_type == 'ddpm':
         model = load_ddpm_model(model_path, device=device)
+    else:  # diff2flow
+        model = load_diff2flow_model(
+            checkpoint_path=model_path,
+            pretrained_unet_dir=kwargs.get("pretrained_unet_dir", "ddpm_cifar10/final_model"),
+            device=device,
+            num_timesteps=kwargs.get("num_timesteps", 1000),
+            diffusion_parameterization=kwargs.get("diffusion_parameterization", "eps"),
+            enforce_zero_snr=kwargs.get("enforce_zero_snr", False),
+        )
     
     # Load real CIFAR-10 data
     print("Loading CIFAR-10 dataset...")
@@ -299,9 +426,14 @@ def evaluate_model(model_path, model_type='flow_matching', num_samples=10000,
             num_samples, batch_size=batch_size, 
             method=method, rtol=rtol, atol=atol
         )
-    else:  # ddpm
+    elif model_type == 'ddpm':
         num_inference_steps = kwargs.get('num_inference_steps', 1000)
         evaluator = DDPMEvaluator(model, device=device, num_inference_steps=num_inference_steps)
+        generated_images, nfe = evaluator.generate_samples(num_samples, batch_size=batch_size)
+    else:  # diff2flow
+        num_steps = kwargs.get('num_steps', 1000)
+        method = kwargs.get('method', 'euler')
+        evaluator = Diff2FlowEvaluator(model, device=device, num_steps=num_steps, method=method)
         generated_images, nfe = evaluator.generate_samples(num_samples, batch_size=batch_size)
     
     wall_time = time.time() - start_time
@@ -355,13 +487,40 @@ if __name__ == "__main__":
         batch_size=128,
         num_inference_steps=1000
     )
+
+    # Evaluate Diff2Flow model
+    diff2flow_results = evaluate_model(
+        model_path="diff2flow_cifar10/diff2flow_flowmodel.pt",
+        model_type='diff2flow',
+        num_samples=10000,
+        batch_size=128,
+        num_steps=1000,
+        method='euler',
+        pretrained_unet_dir="ddpm_cifar10/final_model",
+    )
     
     # Compare results
     print("\n" + "="*50)
     print("COMPARISON")
     print("="*50)
-    print(f"FID - Flow Matching: {flow_results['fid']:.2f} | DDPM: {ddpm_results['fid']:.2f}")
-    print(f"NFE - Flow Matching: {flow_results['nfe']:.1f} | DDPM: {ddpm_results['nfe']:.1f}")
-    print(f"Time - Flow Matching: {flow_results['wall_time']:.2f}s | DDPM: {ddpm_results['wall_time']:.2f}s")
-    print(f"Speed - Flow Matching: {flow_results['samples_per_second']:.2f} | DDPM: {ddpm_results['samples_per_second']:.2f} samples/s")
+    print(
+        f"FID - Flow Matching: {flow_results['fid']:.2f} | "
+        f"DDPM: {ddpm_results['fid']:.2f} | "
+        f"Diff2Flow: {diff2flow_results['fid']:.2f}"
+    )
+    print(
+        f"NFE - Flow Matching: {flow_results['nfe']:.1f} | "
+        f"DDPM: {ddpm_results['nfe']:.1f} | "
+        f"Diff2Flow: {diff2flow_results['nfe']:.1f}"
+    )
+    print(
+        f"Time - Flow Matching: {flow_results['wall_time']:.2f}s | "
+        f"DDPM: {ddpm_results['wall_time']:.2f}s | "
+        f"Diff2Flow: {diff2flow_results['wall_time']:.2f}s"
+    )
+    print(
+        f"Speed - Flow Matching: {flow_results['samples_per_second']:.2f} | "
+        f"DDPM: {ddpm_results['samples_per_second']:.2f} | "
+        f"Diff2Flow: {diff2flow_results['samples_per_second']:.2f} samples/s"
+    )
     print("="*50)
