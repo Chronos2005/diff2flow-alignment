@@ -11,6 +11,8 @@ from pytorch_fid import fid_score
 from PIL import Image
 import tempfile
 import shutil
+from torch.cuda.amp import autocast
+import gc
 
 from cifar import DATA_ROOT
 from flow_obj import FlowModelObj
@@ -38,19 +40,21 @@ class DiffusersUNetWrapper(torch.nn.Module):
 class FlowMatchingEvaluator:
     """Evaluator for flow matching models"""
     
-    def __init__(self, model, device='cuda', sigma_min=1e-4):
+    def __init__(self, model, device='cuda', sigma_min=1e-4, use_amp=False):
         self.model = model
         self.device = device
         self.sigma_min = sigma_min
         self.nfe_counter = NFECounter()
+        self.use_amp = use_amp and torch.cuda.is_available()
     
     def create_ode_func(self):
         """Create ODE function that counts evaluations"""
         class ODEFunc(torch.nn.Module):
-            def __init__(self, model, nfe_counter):
+            def __init__(self, model, nfe_counter, use_amp):
                 super().__init__()
                 self.model = model
                 self.nfe_counter = nfe_counter
+                self.use_amp = use_amp
             
             def forward(self, t, x):
                 self.nfe_counter.nfe += 1
@@ -58,10 +62,14 @@ class FlowMatchingEvaluator:
                 t_scaled = (t * 999).expand(batch_size).to(x.device)
                 
                 with torch.no_grad():
-                    v = self.model(x, t_scaled, return_dict=False)[0]
+                    if self.use_amp:
+                        with autocast():
+                            v = self.model(x, t_scaled, return_dict=False)[0]
+                    else:
+                        v = self.model(x, t_scaled, return_dict=False)[0]
                 return v
         
-        return ODEFunc(self.model, self.nfe_counter)
+        return ODEFunc(self.model, self.nfe_counter, self.use_amp)
     
     def generate_samples(self, num_samples, batch_size=128, method='dopri5', rtol=1e-5, atol=1e-5):
         """Generate samples and track NFE"""
@@ -101,6 +109,10 @@ class FlowMatchingEvaluator:
             samples = torch.clamp(samples, 0, 1)
             
             all_samples.append(samples.cpu())
+            
+            # Clear GPU cache periodically
+            if (i + 1) % 10 == 0:
+                torch.cuda.empty_cache()
         
         all_samples = torch.cat(all_samples, dim=0)[:num_samples]
         avg_nfe = self.nfe_counter.nfe / num_samples
@@ -111,12 +123,13 @@ class FlowMatchingEvaluator:
 class DDPMEvaluator:
     """Evaluator for DDPM models"""
     
-    def __init__(self, model, device='cuda', num_inference_steps=1000):
+    def __init__(self, model, device='cuda', num_inference_steps=1000, use_amp=False):
         self.model = model
         self.device = device
         self.num_inference_steps = num_inference_steps
         self.scheduler = DDPMScheduler(num_train_timesteps=1000)
         self.nfe_counter = NFECounter()
+        self.use_amp = use_amp and torch.cuda.is_available()
     
     def generate_samples(self, num_samples, batch_size=128):
         """Generate samples and track NFE (number of denoising steps)"""
@@ -136,8 +149,13 @@ class DDPMEvaluator:
             
             for t in self.scheduler.timesteps:
                 with torch.no_grad():
-                    # Predict noise
-                    model_output = self.model(image, t, return_dict=False)[0]
+                    # Predict noise with optional AMP
+                    if self.use_amp:
+                        with autocast():
+                            model_output = self.model(image, t, return_dict=False)[0]
+                    else:
+                        model_output = self.model(image, t, return_dict=False)[0]
+                    
                     self.nfe_counter.nfe += current_batch_size
                     
                     # Compute previous image
@@ -148,6 +166,10 @@ class DDPMEvaluator:
             samples = torch.clamp(samples, 0, 1)
             
             all_samples.append(samples.cpu())
+            
+            # Clear GPU cache periodically
+            if (i + 1) % 10 == 0:
+                torch.cuda.empty_cache()
         
         all_samples = torch.cat(all_samples, dim=0)[:num_samples]
         avg_nfe = self.nfe_counter.nfe / num_samples
@@ -157,12 +179,13 @@ class DDPMEvaluator:
 
 class Diff2FlowEvaluator:
     """Evaluator for Diff2Flow FlowModelObj"""
-    def __init__(self, model, device='cuda', num_steps=1000, method='euler'):
+    def __init__(self, model, device='cuda', num_steps=1000, method='euler', use_amp=False):
         self.model = model
         self.device = device
         self.num_steps = num_steps
         self.method = method
         self.nfe_counter = NFECounter()
+        self.use_amp = use_amp and torch.cuda.is_available()
 
     def generate_samples(self, num_samples, batch_size=128):
         self.model.eval()
@@ -176,10 +199,17 @@ class Diff2FlowEvaluator:
             z = torch.randn(current_batch_size, 3, 32, 32, device=self.device)
 
             with torch.no_grad():
-                samples = self.model.generate(
-                    z,
-                    sample_kwargs={"num_steps": self.num_steps, "method": self.method},
-                )
+                if self.use_amp:
+                    with autocast():
+                        samples = self.model.generate(
+                            z,
+                            sample_kwargs={"num_steps": self.num_steps, "method": self.method},
+                        )
+                else:
+                    samples = self.model.generate(
+                        z,
+                        sample_kwargs={"num_steps": self.num_steps, "method": self.method},
+                    )
 
             if self.method == "euler":
                 self.nfe_counter.nfe += current_batch_size * self.num_steps
@@ -188,6 +218,10 @@ class Diff2FlowEvaluator:
             samples = (samples + 1) / 2
             samples = torch.clamp(samples, 0, 1)
             all_samples.append(samples.cpu())
+            
+            # Clear GPU cache periodically
+            if (i + 1) % 10 == 0:
+                torch.cuda.empty_cache()
 
         all_samples = torch.cat(all_samples, dim=0)[:num_samples]
         avg_nfe = self.nfe_counter.nfe / num_samples if self.method == "euler" else float("nan")
@@ -195,18 +229,19 @@ class Diff2FlowEvaluator:
         return all_samples, avg_nfe
 
 
-def save_images_to_dir(images, output_dir):
-    """Save tensor images to directory for FID calculation"""
+def save_images_to_dir(images, output_dir, num_workers=4):
+    """Save tensor images to directory for FID calculation - optimized with multiprocessing"""
     os.makedirs(output_dir, exist_ok=True)
     
-    for idx, img_tensor in enumerate(tqdm(images, desc=f"Saving images to {output_dir}")):
-        # Convert tensor to PIL Image
-        img_array = (img_tensor.numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
+    # Convert all tensors to numpy first (faster in batch)
+    images_np = (images.numpy().transpose(0, 2, 3, 1) * 255).astype(np.uint8)
+    
+    for idx, img_array in enumerate(tqdm(images_np, desc=f"Saving images to {output_dir}")):
         img = Image.fromarray(img_array)
         img.save(os.path.join(output_dir, f'{idx:05d}.png'))
 
 
-def calculate_fid_from_tensors(real_images, generated_images, batch_size=50, device='cuda'):
+def calculate_fid_from_tensors(real_images, generated_images, batch_size=50, device='cuda', num_workers=4):
     """
     Calculate FID using pytorch-fid library.
     
@@ -215,6 +250,7 @@ def calculate_fid_from_tensors(real_images, generated_images, batch_size=50, dev
         generated_images: Tensor of generated images [N, 3, H, W] in range [0, 1]
         batch_size: Batch size for FID calculation
         device: Device to use
+        num_workers: Number of workers for data loading
     
     Returns:
         FID score
@@ -226,8 +262,8 @@ def calculate_fid_from_tensors(real_images, generated_images, batch_size=50, dev
         
         # Save images to directories
         print("Preparing images for FID calculation...")
-        save_images_to_dir(real_images, real_dir)
-        save_images_to_dir(generated_images, gen_dir)
+        save_images_to_dir(real_images, real_dir, num_workers=num_workers)
+        save_images_to_dir(generated_images, gen_dir, num_workers=num_workers)
         
         # Calculate FID using pytorch-fid
         print("Calculating FID score...")
@@ -236,7 +272,7 @@ def calculate_fid_from_tensors(real_images, generated_images, batch_size=50, dev
             batch_size=batch_size,
             device=device,
             dims=2048,  # InceptionV3 feature dimension
-            num_workers=0
+            num_workers=num_workers
         )
     
     return fid_value
@@ -280,7 +316,8 @@ def register_schedule_from_betas(flow_model, betas):
     )
 
 
-def load_flow_matching_model(checkpoint_path, device='cuda'):
+@torch.no_grad()
+def load_flow_matching_model(checkpoint_path, device='cuda', compile_model=False):
     """Load a Flow Matching model from checkpoint"""
     model = UNet2DModel(
         sample_size=32,
@@ -317,23 +354,39 @@ def load_flow_matching_model(checkpoint_path, device='cuda'):
     model.to(device)
     model.eval()
     
+    # Optional: compile model for faster inference (PyTorch 2.0+)
+    if compile_model and hasattr(torch, 'compile'):
+        print("Compiling model with torch.compile...")
+        model = torch.compile(model, mode='reduce-overhead')
+    
     return model
 
 
-def load_ddpm_model(model_dir, device='cuda'):
+@torch.no_grad()
+def load_ddpm_model(model_dir, device='cuda', compile_model=False):
     """Load a DDPM model from pretrained directory"""
     model = UNet2DModel.from_pretrained(model_dir)
     model.to(device)
     model.eval()
     
+    if compile_model and hasattr(torch, 'compile'):
+        print("Compiling model with torch.compile...")
+        model = torch.compile(model, mode='reduce-overhead')
+    
     return model
 
 
+@torch.no_grad()
 def load_diff2flow_model(checkpoint_path, pretrained_unet_dir, device='cuda',
                          num_timesteps=1000, diffusion_parameterization='eps',
-                         enforce_zero_snr=False):
+                         enforce_zero_snr=False, compile_model=False):
     """Load a Diff2Flow FlowModelObj from checkpoint"""
     unet = UNet2DModel.from_pretrained(pretrained_unet_dir)
+    
+    if compile_model and hasattr(torch, 'compile'):
+        print("Compiling UNet with torch.compile...")
+        unet = torch.compile(unet, mode='reduce-overhead')
+    
     wrapped_unet = DiffusersUNetWrapper(unet)
 
     flow_model = FlowModelObj(
@@ -358,10 +411,44 @@ def load_diff2flow_model(checkpoint_path, pretrained_unet_dir, device='cuda',
     return flow_model
 
 
+def load_real_images_efficiently(num_samples, batch_size=256):
+    """Load real images more efficiently using DataLoader"""
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+    ])
+    
+    dataset = datasets.CIFAR10(
+        root=DATA_ROOT,
+        train=False,
+        download=False,
+        transform=transform
+    )
+    
+    # Sample random indices
+    indices = np.random.choice(len(dataset), num_samples, replace=False)
+    subset = Subset(dataset, indices)
+    
+    # Use DataLoader for efficient batched loading
+    loader = DataLoader(
+        subset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True
+    )
+    
+    real_images = []
+    for batch, _ in tqdm(loader, desc="Loading real images"):
+        real_images.append(batch)
+    
+    return torch.cat(real_images, dim=0)
+
+
 def evaluate_model(model_path, model_type='flow_matching', num_samples=10000, 
-                   batch_size=128, device='cuda', **kwargs):
+                   batch_size=128, device='cuda', use_amp=False, compile_model=False,
+                   num_workers=4, **kwargs):
     """
-    Evaluate a generative model.
+    Evaluate a generative model with optimizations.
     
     Args:
         model_path: Path to model checkpoint or directory
@@ -369,9 +456,10 @@ def evaluate_model(model_path, model_type='flow_matching', num_samples=10000,
         num_samples: Number of samples to generate for FID calculation
         batch_size: Batch size for generation
         device: Device to use
-        **kwargs: Additional arguments:
-            - method, rtol, atol for flow matching
-            - num_inference_steps for ddpm
+        use_amp: Use automatic mixed precision (faster on modern GPUs)
+        compile_model: Use torch.compile for faster inference (PyTorch 2.0+)
+        num_workers: Number of workers for data loading
+        **kwargs: Additional arguments
     
     Returns:
         dict with 'fid', 'nfe', and 'wall_time'
@@ -381,9 +469,9 @@ def evaluate_model(model_path, model_type='flow_matching', num_samples=10000,
     # Load model
     print(f"Loading {model_type} model from {model_path}...")
     if model_type == 'flow_matching':
-        model = load_flow_matching_model(model_path, device=device)
+        model = load_flow_matching_model(model_path, device=device, compile_model=compile_model)
     elif model_type == 'ddpm':
-        model = load_ddpm_model(model_path, device=device)
+        model = load_ddpm_model(model_path, device=device, compile_model=compile_model)
     else:  # diff2flow
         model = load_diff2flow_model(
             checkpoint_path=model_path,
@@ -392,25 +480,12 @@ def evaluate_model(model_path, model_type='flow_matching', num_samples=10000,
             num_timesteps=kwargs.get("num_timesteps", 1000),
             diffusion_parameterization=kwargs.get("diffusion_parameterization", "eps"),
             enforce_zero_snr=kwargs.get("enforce_zero_snr", False),
+            compile_model=compile_model,
         )
     
-    # Load real CIFAR-10 data
+    # Load real CIFAR-10 data efficiently
     print("Loading CIFAR-10 dataset...")
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-    ])
-    
-    dataset = datasets.CIFAR10(
-        root=DATA_ROOT,
-        train=False,  # Use test set for evaluation
-        download=False,
-        transform=transform
-    )
-    
-    # Sample random real images
-    print(f"Sampling {num_samples} real images...")
-    indices = np.random.choice(len(dataset), num_samples, replace=False)
-    real_images = torch.stack([dataset[i][0] for i in tqdm(indices, desc="Loading real images")])
+    real_images = load_real_images_efficiently(num_samples, batch_size=256)
     
     # Generate samples and measure time
     print(f"Generating {num_samples} samples...")
@@ -421,19 +496,19 @@ def evaluate_model(model_path, model_type='flow_matching', num_samples=10000,
         rtol = kwargs.get('rtol', 1e-5)
         atol = kwargs.get('atol', 1e-5)
         
-        evaluator = FlowMatchingEvaluator(model, device=device)
+        evaluator = FlowMatchingEvaluator(model, device=device, use_amp=use_amp)
         generated_images, nfe = evaluator.generate_samples(
             num_samples, batch_size=batch_size, 
             method=method, rtol=rtol, atol=atol
         )
     elif model_type == 'ddpm':
         num_inference_steps = kwargs.get('num_inference_steps', 1000)
-        evaluator = DDPMEvaluator(model, device=device, num_inference_steps=num_inference_steps)
+        evaluator = DDPMEvaluator(model, device=device, num_inference_steps=num_inference_steps, use_amp=use_amp)
         generated_images, nfe = evaluator.generate_samples(num_samples, batch_size=batch_size)
     else:  # diff2flow
         num_steps = kwargs.get('num_steps', 1000)
         method = kwargs.get('method', 'euler')
-        evaluator = Diff2FlowEvaluator(model, device=device, num_steps=num_steps, method=method)
+        evaluator = Diff2FlowEvaluator(model, device=device, num_steps=num_steps, method=method, use_amp=use_amp)
         generated_images, nfe = evaluator.generate_samples(num_samples, batch_size=batch_size)
     
     wall_time = time.time() - start_time
@@ -443,9 +518,16 @@ def evaluate_model(model_path, model_type='flow_matching', num_samples=10000,
     fid_value = calculate_fid_from_tensors(
         real_images, 
         generated_images, 
-        batch_size=50,  # FID batch size
-        device=device
+        batch_size=50,
+        device=device,
+        num_workers=num_workers
     )
+    
+    # Cleanup
+    del real_images, generated_images
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     results = {
         'fid': fid_value,
@@ -468,7 +550,7 @@ def evaluate_model(model_path, model_type='flow_matching', num_samples=10000,
 
 # Example usage
 if __name__ == "__main__":
-    # Evaluate Flow Matching model
+    # Evaluate with optimizations enabled
     flow_results = evaluate_model(
         model_path="flow_matching_cifar10/final_model/model.pt",
         model_type='flow_matching',
@@ -476,19 +558,23 @@ if __name__ == "__main__":
         batch_size=128,
         method='dopri5',
         rtol=1e-5,
-        atol=1e-5
+        atol=1e-5,
+        use_amp=True,  # Enable mixed precision
+        compile_model=True,  # Enable torch.compile (PyTorch 2.0+)
+        num_workers=4
     )
     
-    # Evaluate DDPM model
     ddpm_results = evaluate_model(
         model_path="ddpm_cifar10/final_model",
         model_type='ddpm',
         num_samples=10000,
         batch_size=128,
-        num_inference_steps=1000
+        num_inference_steps=1000,
+        use_amp=True,
+        compile_model=True,
+        num_workers=4
     )
 
-    # Evaluate Diff2Flow model
     diff2flow_results = evaluate_model(
         model_path="diff2flow_cifar10/diff2flow_flowmodel.pt",
         model_type='diff2flow',
@@ -497,6 +583,9 @@ if __name__ == "__main__":
         num_steps=1000,
         method='euler',
         pretrained_unet_dir="ddpm_cifar10/final_model",
+        use_amp=True,
+        compile_model=True,
+        num_workers=4
     )
     
     # Compare results
