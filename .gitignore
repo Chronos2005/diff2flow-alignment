@@ -4,3 +4,4 @@ logs/
 *.pt
 *.json
 *.safetensors
+datasets/
