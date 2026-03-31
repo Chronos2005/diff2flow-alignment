@@ -11,11 +11,12 @@ from pytorch_fid import fid_score
 from PIL import Image
 import tempfile
 import shutil
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 import gc
 
 from cifar import DATA_ROOT
 from flow_obj import FlowModelObj
+from utils.lora_utils import apply_lora, mark_only_lora_as_trainable
 
 
 class NFECounter:
@@ -63,7 +64,7 @@ class FlowMatchingEvaluator:
                 
                 with torch.no_grad():
                     if self.use_amp:
-                        with autocast():
+                        with autocast('cuda'):
                             v = self.model(x, t_scaled, return_dict=False)[0]
                     else:
                         v = self.model(x, t_scaled, return_dict=False)[0]
@@ -71,7 +72,7 @@ class FlowMatchingEvaluator:
         
         return ODEFunc(self.model, self.nfe_counter, self.use_amp)
     
-    def generate_samples(self, num_samples, batch_size=128, method='dopri5', rtol=1e-5, atol=1e-5):
+    def generate_samples(self, num_samples, batch_size=128, method='euler', num_steps=100, rtol=1e-5, atol=1e-5):
         """Generate samples and track NFE"""
         self.model.eval()
         all_samples = []
@@ -85,24 +86,38 @@ class FlowMatchingEvaluator:
             # Start from noise
             x0 = torch.randn(current_batch_size, 3, 32, 32, device=self.device)
             
-            # Create ODE function
-            ode_func = self.create_ode_func()
-            
-            # Integration time span
-            t_span = torch.tensor([0.0, 1.0], device=self.device)
-            
-            # Solve ODE
             with torch.no_grad():
-                trajectory = odeint(
-                    ode_func,
-                    x0,
-                    t_span,
-                    method=method,
-                    rtol=rtol,
-                    atol=atol,
-                )
+                if method == 'euler':
+                    # Euler integration
+                    dt = 1.0 / num_steps
+                    x = x0
+                    for step in range(num_steps):
+                        t = step * dt
+                        t_tensor = torch.tensor(t, device=self.device)
+                        batch_t = (t_tensor * 999).expand(current_batch_size).to(self.device)
+                        if self.use_amp:
+                            with autocast('cuda'):
+                                v = self.model(x, batch_t, return_dict=False)[0]
+                        else:
+                            v = self.model(x, batch_t, return_dict=False)[0]
+                        x = x + v * dt
+                        self.nfe_counter.nfe += 1
+                    samples = x
+                else:
+                    # Adaptive ODE solver (dopri5, etc.)
+                    ode_func = self.create_ode_func()
+                    t_span = torch.tensor([0.0, 1.0], device=self.device)
+                    trajectory = odeint(
+                        ode_func,
+                        x0,
+                        t_span,
+                        method=method,
+                        rtol=rtol,
+                        atol=atol,
+                    )
+                    samples = trajectory[-1]
             
-            samples = trajectory[-1]
+
             
             # Denormalize from [-1, 1] to [0, 1]
             samples = (samples + 1) / 2
@@ -151,7 +166,7 @@ class DDPMEvaluator:
                 with torch.no_grad():
                     # Predict noise with optional AMP
                     if self.use_amp:
-                        with autocast():
+                        with autocast('cuda'):
                             model_output = self.model(image, t, return_dict=False)[0]
                     else:
                         model_output = self.model(image, t, return_dict=False)[0]
@@ -200,7 +215,7 @@ class Diff2FlowEvaluator:
 
             with torch.no_grad():
                 if self.use_amp:
-                    with autocast():
+                    with autocast('cuda'):
                         samples = self.model.generate(
                             z,
                             sample_kwargs={"num_steps": self.num_steps, "method": self.method},
@@ -343,7 +358,7 @@ def load_flow_matching_model(checkpoint_path, device='cuda', compile_model=False
         ),
     )
     
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
     # Handle different checkpoint formats
     if 'model_state_dict' in checkpoint:
@@ -377,15 +392,32 @@ def load_ddpm_model(model_dir, device='cuda', compile_model=False):
 
 
 @torch.no_grad()
-def load_diff2flow_model(checkpoint_path, pretrained_unet_dir, device='cuda',
-                         num_timesteps=1000, diffusion_parameterization='eps',
-                         enforce_zero_snr=False, compile_model=False):
-    """Load a Diff2Flow FlowModelObj from checkpoint"""
+def load_diff2flow_model(
+    checkpoint_path,
+    pretrained_unet_dir,
+    device='cuda',
+    num_timesteps=1000,
+    diffusion_parameterization='eps',
+    enforce_zero_snr=False,
+    compile_model=False,
+    use_lora: bool = False,
+    lora_r: int = 4,
+    lora_alpha: float = 8.0,
+    lora_dropout: float = 0.0,
+):
+    """Load a Diff2Flow FlowModelObj from checkpoint.
+
+    If ``use_lora`` is True, we inject LoRA adapters into the UNet with the
+    same hyperparameters used during training so the state dict matches.
+    """
+
     unet = UNet2DModel.from_pretrained(pretrained_unet_dir)
-    
-    if compile_model and hasattr(torch, 'compile'):
-        print("Compiling UNet with torch.compile...")
-        unet = torch.compile(unet, mode='reduce-overhead')
+
+    if use_lora:
+        print(f"Applying LoRA to UNet for Diff2Flow (r={lora_r}, alpha={lora_alpha}, dropout={lora_dropout})")
+        apply_lora(unet, r=lora_r, lora_alpha=lora_alpha, lora_dropout=lora_dropout)
+        # Not strictly necessary for evaluation, but keeps the model consistent
+        mark_only_lora_as_trainable(unet)
     
     wrapped_unet = DiffusersUNetWrapper(unet)
 
@@ -399,7 +431,7 @@ def load_diff2flow_model(checkpoint_path, pretrained_unet_dir, device='cuda',
     scheduler = DDPMScheduler(num_train_timesteps=num_timesteps)
     register_schedule_from_betas(flow_model, scheduler.betas)
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if 'model_state_dict' in checkpoint:
         flow_model.load_state_dict(checkpoint['model_state_dict'])
     else:
@@ -407,6 +439,10 @@ def load_diff2flow_model(checkpoint_path, pretrained_unet_dir, device='cuda',
 
     flow_model.to(device)
     flow_model.eval()
+    
+    if compile_model and hasattr(torch, 'compile'):
+        print("Compiling Diff2Flow model with torch.compile...")
+        flow_model = torch.compile(flow_model, mode='reduce-overhead')
 
     return flow_model
 
@@ -481,6 +517,10 @@ def evaluate_model(model_path, model_type='flow_matching', num_samples=10000,
             diffusion_parameterization=kwargs.get("diffusion_parameterization", "eps"),
             enforce_zero_snr=kwargs.get("enforce_zero_snr", False),
             compile_model=compile_model,
+            use_lora=kwargs.get("use_lora", False),
+            lora_r=kwargs.get("lora_r", 4),
+            lora_alpha=kwargs.get("lora_alpha", 8.0),
+            lora_dropout=kwargs.get("lora_dropout", 0.0),
         )
     
     # Load real CIFAR-10 data efficiently
@@ -492,14 +532,15 @@ def evaluate_model(model_path, model_type='flow_matching', num_samples=10000,
     start_time = time.time()
     
     if model_type == 'flow_matching':
-        method = kwargs.get('method', 'dopri5')
+        method = kwargs.get('method', 'euler')
+        num_steps = kwargs.get('num_steps', 100)
         rtol = kwargs.get('rtol', 1e-5)
         atol = kwargs.get('atol', 1e-5)
         
         evaluator = FlowMatchingEvaluator(model, device=device, use_amp=use_amp)
         generated_images, nfe = evaluator.generate_samples(
             num_samples, batch_size=batch_size, 
-            method=method, rtol=rtol, atol=atol
+            method=method, num_steps=num_steps, rtol=rtol, atol=atol
         )
     elif model_type == 'ddpm':
         num_inference_steps = kwargs.get('num_inference_steps', 1000)
@@ -556,11 +597,10 @@ if __name__ == "__main__":
         model_type='flow_matching',
         num_samples=10000,
         batch_size=128,
-        method='dopri5',
-        rtol=1e-5,
-        atol=1e-5,
-        use_amp=True,  # Enable mixed precision
-        compile_model=True,  # Enable torch.compile (PyTorch 2.0+)
+        method='euler',
+        num_steps=100,
+        use_amp=True,
+        compile_model=False,
         num_workers=4
     )
     
@@ -578,11 +618,15 @@ if __name__ == "__main__":
     diff2flow_results = evaluate_model(
         model_path="diff2flow_cifar10/diff2flow_flowmodel.pt",
         model_type='diff2flow',
-        num_samples=10000,
+        num_samples=10,
         batch_size=128,
         num_steps=1000,
         method='euler',
         pretrained_unet_dir="ddpm_cifar10/final_model",
+        use_lora=True,
+        lora_r=4,
+        lora_alpha=8.0,
+        lora_dropout=0.0,
         use_amp=True,
         compile_model=True,
         num_workers=4
