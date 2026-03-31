@@ -6,13 +6,12 @@
 #SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=12
 #SBATCH --time=24:00:00
-#SBATCH --output=logs/phase1_%j.out
-#SBATCH --error=logs/phase1_%j.err
- 
-module load conda
- 
-# Activate your environment
+#SBATCH --output=logs/prog_distill_%j.out
+#SBATCH --error=logs/prog_distill_%j.err
 
+module load conda
+
+# Activate your environment
 source activate /home/ram1g23/.conda/envs/diffusion_flow_study
 
 echo "Python: $(which python)"
@@ -42,5 +41,7 @@ EOF
 
 echo "===== END CHECK ====="
 
-# --- RUN YOUR TRAINING ---
-python -u diff2flow.py
+# --- PROGRESSIVE DISTILLATION ---
+echo "===== STARTING PROGRESSIVE DISTILLATION ====="
+python -u progressive_distillation.py
+echo "===== PROGRESSIVE DISTILLATION COMPLETE ====="

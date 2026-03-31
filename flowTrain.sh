@@ -3,7 +3,7 @@
 #SBATCH --account=ecsstudents
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=12
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/phase1_%j.out
@@ -42,5 +42,9 @@ EOF
 
 echo "===== END CHECK ====="
 
-# --- RUN YOUR TRAINING ---
-python -u diff2flow.py
+
+
+# --- TRAIN FLOW MATCHING ---
+echo "===== STARTING FLOW MATCHING TRAINING ====="
+python -u celebAFlow.py
+echo "===== FLOW MATCHING TRAINING COMPLETE ====="
