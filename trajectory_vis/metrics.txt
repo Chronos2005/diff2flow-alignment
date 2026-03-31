@@ -1,0 +1,5 @@
+Trajectory Straightness (straight-line / arc-length)
+=======================================================
+  DDPM           :  0.9332 ± 0.0246  (n=50)
+  Flow Matching  :  0.9785 ± 0.0060  (n=50)
+  Diff2Flow      :  0.9795 ± 0.0074  (n=50)
