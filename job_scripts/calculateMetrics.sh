@@ -43,4 +43,4 @@ EOF
 echo "===== END CHECK ====="
 
 # --- TRAIN DDPM ---
-python -u metrics.py
+python -u ../metrics.py 

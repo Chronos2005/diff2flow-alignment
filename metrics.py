@@ -1,22 +1,37 @@
-import torch
-import numpy as np
-from torchvision import transforms, datasets
-from torch.utils.data import DataLoader, Subset
-import time
-import os
-from tqdm import tqdm
-from diffusers import UNet2DModel, DDPMScheduler, DDPMPipeline
-from torchdiffeq import odeint
-from pytorch_fid import fid_score
-from PIL import Image
-import tempfile
-import shutil
-from torch.amp import autocast
+import argparse
 import gc
+import json
+import os
+import shutil
+import tempfile
+import time
+from datetime import datetime
+
+import numpy as np
+import torch
+from PIL import Image
+from diffusers import UNet2DModel, DDPMScheduler, DDPMPipeline
+from pytorch_fid import fid_score
+from torch.amp import autocast
+from torch.utils.data import DataLoader, Subset
+from torchdiffeq import odeint
+from torchvision import transforms, datasets
+from tqdm import tqdm
 
 from cifar import DATA_ROOT
 from flow_obj import FlowModelObj
-from utils.lora_utils import apply_lora, mark_only_lora_as_trainable
+
+# LoRA utilities are optional; make the import robust so evaluation still works
+# even if LoRA training helpers are not present in this checkout.
+try:
+    from utils.lora_utils import apply_lora, mark_only_lora_as_trainable
+except ImportError:  # pragma: no cover - defensive fallback
+    apply_lora = None
+    mark_only_lora_as_trainable = None
+    print(
+        "[metrics] Warning: utils.lora_utils not found. "
+        "LoRA-based Diff2Flow evaluation will be disabled unless the module is available."
+    )
 
 
 class NFECounter:
@@ -116,14 +131,10 @@ class FlowMatchingEvaluator:
                         atol=atol,
                     )
                     samples = trajectory[-1]
-            
 
-            
-            # Denormalize from [-1, 1] to [0, 1]
-            samples = (samples + 1) / 2
-            samples = torch.clamp(samples, 0, 1)
-            
-            all_samples.append(samples.cpu())
+            # Denormalize and move to CPU
+            samples = denormalize_and_clamp(samples).cpu()
+            all_samples.append(samples)
             
             # Clear GPU cache periodically
             if (i + 1) % 10 == 0:
@@ -175,12 +186,10 @@ class DDPMEvaluator:
                     
                     # Compute previous image
                     image = self.scheduler.step(model_output, t, image, return_dict=False)[0]
-            
-            # Denormalize from [-1, 1] to [0, 1]
-            samples = (image + 1) / 2
-            samples = torch.clamp(samples, 0, 1)
-            
-            all_samples.append(samples.cpu())
+
+            # Denormalize and move to CPU
+            samples = denormalize_and_clamp(image).cpu()
+            all_samples.append(samples)
             
             # Clear GPU cache periodically
             if (i + 1) % 10 == 0:
@@ -229,10 +238,9 @@ class Diff2FlowEvaluator:
             if self.method == "euler":
                 self.nfe_counter.nfe += current_batch_size * self.num_steps
 
-            # Denormalize from [-1, 1] to [0, 1]
-            samples = (samples + 1) / 2
-            samples = torch.clamp(samples, 0, 1)
-            all_samples.append(samples.cpu())
+            # Denormalize and move to CPU
+            samples = denormalize_and_clamp(samples).cpu()
+            all_samples.append(samples)
             
             # Clear GPU cache periodically
             if (i + 1) % 10 == 0:
@@ -242,6 +250,16 @@ class Diff2FlowEvaluator:
         avg_nfe = self.nfe_counter.nfe / num_samples if self.method == "euler" else float("nan")
 
         return all_samples, avg_nfe
+
+
+def denormalize_and_clamp(images: torch.Tensor) -> torch.Tensor:
+    """Convert images from [-1, 1] to [0, 1] and clamp.
+
+    This helper removes duplicated logic across evaluators.
+    """
+    images = (images + 1) / 2
+    images = torch.clamp(images, 0.0, 1.0)
+    return images
 
 
 def save_images_to_dir(images, output_dir, num_workers=4):
@@ -293,6 +311,54 @@ def calculate_fid_from_tensors(real_images, generated_images, batch_size=50, dev
     return fid_value
 
 
+def _resolve_pretrained_path(path_str: str) -> str:
+    """Resolve a pretrained model path relative to this file, preferring local dirs.
+
+    This avoids accidentally treating a local folder name as a Hugging Face repo ID
+    (which would trigger network calls on clusters with no internet access).
+    """
+    # Absolute path pointing to a directory
+    if os.path.isabs(path_str) and os.path.isdir(path_str):
+        return path_str
+
+    # Relative path from current working directory
+    if os.path.isdir(path_str):
+        return path_str
+
+    # Relative to this metrics.py file
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.join(base_dir, path_str)
+    if os.path.isdir(candidate):
+        return candidate
+
+    # Fall back to original string; diffusers may interpret it as a repo ID
+    return path_str
+
+
+def _resolve_checkpoint_path(path_str: str) -> str:
+    """Resolve a checkpoint path (file) relative to this file.
+
+    This makes default relative paths work even when the working directory is
+    different (e.g. when called from job_scripts on a cluster).
+    """
+    # Absolute file path
+    if os.path.isabs(path_str) and os.path.isfile(path_str):
+        return path_str
+
+    # Relative to current working directory
+    if os.path.isfile(path_str):
+        return path_str
+
+    # Relative to this metrics.py file
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.join(base_dir, path_str)
+    if os.path.isfile(candidate):
+        return candidate
+
+    # Fall back; torch.load will raise a clear FileNotFoundError
+    return path_str
+
+
 def register_schedule_from_betas(flow_model, betas):
     # betas: torch tensor [T]
     betas = betas.detach().cpu().numpy()
@@ -334,6 +400,7 @@ def register_schedule_from_betas(flow_model, betas):
 @torch.no_grad()
 def load_flow_matching_model(checkpoint_path, device='cuda', compile_model=False):
     """Load a Flow Matching model from checkpoint"""
+    checkpoint_path = _resolve_checkpoint_path(checkpoint_path)
     model = UNet2DModel(
         sample_size=32,
         in_channels=3,
@@ -380,7 +447,9 @@ def load_flow_matching_model(checkpoint_path, device='cuda', compile_model=False
 @torch.no_grad()
 def load_ddpm_model(model_dir, device='cuda', compile_model=False):
     """Load a DDPM model from pretrained directory"""
-    model = UNet2DModel.from_pretrained(model_dir)
+    resolved_dir = _resolve_pretrained_path(model_dir)
+    # local_files_only=True prevents accidental network calls on clusters
+    model = UNet2DModel.from_pretrained(resolved_dir, local_files_only=True)
     model.to(device)
     model.eval()
     
@@ -411,9 +480,17 @@ def load_diff2flow_model(
     same hyperparameters used during training so the state dict matches.
     """
 
-    unet = UNet2DModel.from_pretrained(pretrained_unet_dir)
+    resolved_unet_dir = _resolve_pretrained_path(pretrained_unet_dir)
+    # local_files_only=True prevents accidental network calls on clusters
+    unet = UNet2DModel.from_pretrained(resolved_unet_dir, local_files_only=True)
 
     if use_lora:
+        if apply_lora is None or mark_only_lora_as_trainable is None:
+            raise RuntimeError(
+                "LoRA evaluation requested (use_lora=True) but utils.lora_utils "
+                "could not be imported. Please ensure utils/lora_utils.py is "
+                "available or set use_lora=False."
+            )
         print(f"Applying LoRA to UNet for Diff2Flow (r={lora_r}, alpha={lora_alpha}, dropout={lora_dropout})")
         apply_lora(unet, r=lora_r, lora_alpha=lora_alpha, lora_dropout=lora_dropout)
         # Not strictly necessary for evaluation, but keeps the model consistent
@@ -431,6 +508,7 @@ def load_diff2flow_model(
     scheduler = DDPMScheduler(num_train_timesteps=num_timesteps)
     register_schedule_from_betas(flow_model, scheduler.betas)
 
+    checkpoint_path = _resolve_checkpoint_path(checkpoint_path)
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if 'model_state_dict' in checkpoint:
         flow_model.load_state_dict(checkpoint['model_state_dict'])
@@ -589,71 +667,162 @@ def evaluate_model(model_path, model_type='flow_matching', num_samples=10000,
     return results
 
 
-# Example usage
-if __name__ == "__main__":
-    # Evaluate with optimizations enabled
-    flow_results = evaluate_model(
-        model_path="flow_matching_cifar10/final_model/model.pt",
-        model_type='flow_matching',
-        num_samples=10000,
-        batch_size=128,
-        method='euler',
-        num_steps=100,
-        use_amp=True,
-        compile_model=False,
-        num_workers=4
+def save_evaluation_results(results_dict, output_dir="logs", filename_prefix="metrics_results"):
+    """Persist evaluation results as a JSON file.
+
+    Args:
+        results_dict: Mapping of model name -> metrics dict.
+        output_dir: Directory where the file will be created.
+        filename_prefix: Prefix for the results file name.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(output_dir, f"{filename_prefix}_{timestamp}.json")
+
+    # Convert any non-serializable values (e.g. tensors) to plain types
+    def _to_serializable(obj):
+        if isinstance(obj, torch.Tensor):
+            return obj.detach().cpu().tolist()
+        if isinstance(obj, (np.floating, np.integer)):
+            return obj.item()
+        return obj
+
+    serializable = {
+        k: {mk: _to_serializable(mv) for mk, mv in v.items()} for k, v in results_dict.items()
+    }
+
+    with open(path, "w") as f:
+        json.dump(serializable, f, indent=2)
+
+    print(f"Saved evaluation results to {path}")
+
+def main():
+    """CLI entry-point to evaluate selected models.
+
+    Use --model to choose which model(s) to run.
+    """
+    parser = argparse.ArgumentParser(description="Evaluate generative models on CIFAR-10")
+    parser.add_argument(
+        "--model",
+        "-m",
+        choices=["flow_matching", "ddpm", "diff2flow", "all"],
+        default="all",
+        help="Which model to evaluate (default: all)",
     )
-    
-    ddpm_results = evaluate_model(
-        model_path="ddpm_cifar10/final_model",
-        model_type='ddpm',
-        num_samples=10000,
-        batch_size=128,
-        num_inference_steps=1000,
-        use_amp=True,
-        compile_model=True,
-        num_workers=4
+    parser.add_argument(
+        "--flow-matching-path",
+        type=str,
+        default="flow_matching_cifar10/final_model/model.pt",
+        help="Path to flow-matching checkpoint (.pt)",
+    )
+    parser.add_argument(
+        "--ddpm-dir",
+        type=str,
+        default="ddpm_cifar10/final_model",
+        help="Directory of the DDPM UNet2DModel (diffusers format)",
+    )
+    parser.add_argument(
+        "--diff2flow-path",
+        type=str,
+        default="diff2flow_cifar10/diff2flow_flowmodel.pt",
+        help="Path to Diff2Flow checkpoint (.pt)",
     )
 
-    diff2flow_results = evaluate_model(
-        model_path="diff2flow_cifar10/diff2flow_flowmodel.pt",
-        model_type='diff2flow',
-        num_samples=10,
-        batch_size=128,
-        num_steps=1000,
-        method='euler',
-        pretrained_unet_dir="ddpm_cifar10/final_model",
-        use_lora=True,
-        lora_r=4,
-        lora_alpha=8.0,
-        lora_dropout=0.0,
-        use_amp=True,
-        compile_model=True,
-        num_workers=4
-    )
-    
-    # Compare results
-    print("\n" + "="*50)
-    print("COMPARISON")
-    print("="*50)
-    print(
-        f"FID - Flow Matching: {flow_results['fid']:.2f} | "
-        f"DDPM: {ddpm_results['fid']:.2f} | "
-        f"Diff2Flow: {diff2flow_results['fid']:.2f}"
-    )
-    print(
-        f"NFE - Flow Matching: {flow_results['nfe']:.1f} | "
-        f"DDPM: {ddpm_results['nfe']:.1f} | "
-        f"Diff2Flow: {diff2flow_results['nfe']:.1f}"
-    )
-    print(
-        f"Time - Flow Matching: {flow_results['wall_time']:.2f}s | "
-        f"DDPM: {ddpm_results['wall_time']:.2f}s | "
-        f"Diff2Flow: {diff2flow_results['wall_time']:.2f}s"
-    )
-    print(
-        f"Speed - Flow Matching: {flow_results['samples_per_second']:.2f} | "
-        f"DDPM: {ddpm_results['samples_per_second']:.2f} | "
-        f"Diff2Flow: {diff2flow_results['samples_per_second']:.2f} samples/s"
-    )
-    print("="*50)
+    args = parser.parse_args()
+
+    results = {}
+
+    # Flow matching
+    if args.model in ("flow_matching", "all"):
+        flow_results = evaluate_model(
+            model_path=args.flow_matching_path,
+            model_type='flow_matching',
+            num_samples=10000,
+            batch_size=128,
+            method='euler',
+            num_steps=100,
+            use_amp=True,
+            compile_model=False,
+            num_workers=4,
+        )
+        results["flow_matching"] = flow_results
+
+    # DDPM
+    if args.model in ("ddpm", "all"):
+        ddpm_results = evaluate_model(
+            model_path=args.ddpm_dir,
+            model_type='ddpm',
+            num_samples=10000,
+            batch_size=128,
+            num_inference_steps=1000,
+            use_amp=True,
+            compile_model=True,
+            num_workers=4,
+        )
+        results["ddpm"] = ddpm_results
+
+    # Diff2Flow
+    if args.model in ("diff2flow", "all"):
+        diff2flow_results = evaluate_model(
+            model_path=args.diff2flow_path,
+            model_type='diff2flow',
+            num_samples=10,
+            batch_size=128,
+            num_steps=1000,
+            method='euler',
+            pretrained_unet_dir="ddpm_cifar10/final_model",
+            # Default to no LoRA to keep this runnable without extra utils
+            use_lora=False,
+            lora_r=4,
+            lora_alpha=8.0,
+            lora_dropout=0.0,
+            use_amp=True,
+            compile_model=True,
+            num_workers=4,
+        )
+        results["diff2flow"] = diff2flow_results
+
+    if not results:
+        print("No models were evaluated. Check --model argument.")
+        return
+
+    # Save all results to disk for later analysis
+    save_evaluation_results(results)
+
+    # Optional comparison printout if more than one model was run
+    if len(results) > 1:
+        print("\n" + "=" * 50)
+        print("COMPARISON")
+        print("=" * 50)
+
+        # Safely pull metrics, falling back if some models weren't run
+        fm = results.get("flow_matching")
+        dd = results.get("ddpm")
+        d2f = results.get("diff2flow")
+
+        if fm and dd and d2f:
+            print(
+                f"FID - Flow Matching: {fm['fid']:.2f} | "
+                f"DDPM: {dd['fid']:.2f} | "
+                f"Diff2Flow: {d2f['fid']:.2f}"
+            )
+            print(
+                f"NFE - Flow Matching: {fm['nfe']:.1f} | "
+                f"DDPM: {dd['nfe']:.1f} | "
+                f"Diff2Flow: {d2f['nfe']:.1f}"
+            )
+            print(
+                f"Time - Flow Matching: {fm['wall_time']:.2f}s | "
+                f"DDPM: {dd['wall_time']:.2f}s | "
+                f"Diff2Flow: {d2f['wall_time']:.2f}s"
+            )
+            print(
+                f"Speed - Flow Matching: {fm['samples_per_second']:.2f} | "
+                f"DDPM: {dd['samples_per_second']:.2f} | "
+                f"Diff2Flow: {d2f['samples_per_second']:.2f} samples/s"
+            )
+            print("=" * 50)
+
+
+if __name__ == "__main__":
+    main()
