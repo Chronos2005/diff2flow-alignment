@@ -5,8 +5,8 @@ from torch import Tensor
 from functools import partial
 import numpy as np
 
-from flow import FlowModel
-from flow import forward_with_cfg
+from utils.flow import FlowModel
+from utils.flow import forward_with_cfg
 
 from utils.diffusion_utils import make_beta_schedule
 from utils.diffusion_utils import enforce_zero_terminal_snr

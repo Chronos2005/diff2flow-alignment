@@ -14,7 +14,7 @@ from typing import Union
 from functools import partial
 from torchdiffeq import odeint
 
-from helpers import instantiate_from_config
+from utils.helpers import instantiate_from_config
 
 
 # default from https://github.com/willisma/SiT

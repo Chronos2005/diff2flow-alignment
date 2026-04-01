@@ -30,7 +30,7 @@ from sklearn.decomposition import PCA
 
 # ---------- project imports ----------
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from flow_obj import FlowModelObj
+from utils.flow_obj import FlowModelObj
 
 # ──────────────────────────────────────────────────────────────
 # Config defaults

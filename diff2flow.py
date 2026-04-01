@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms, datasets, utils
 from diffusers import UNet2DModel, DDPMScheduler
 
-from flow_obj import FlowModelObj
+from utils.flow_obj import FlowModelObj
 from dataset_download_scripts.cifar import DATA_ROOT
 
 # --- Argument parsing ---
