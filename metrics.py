@@ -15,7 +15,7 @@ from torchmetrics.image.fid import FrechetInceptionDistance
 from torchvision import transforms, datasets
 from tqdm import tqdm
 
-from cifar import DATA_ROOT
+from dataset_download_scripts.cifar import DATA_ROOT
 from flow_obj import FlowModelObj
 
 

@@ -27,7 +27,7 @@ from tqdm import tqdm
 from PIL import Image
 import numpy as np
 
-from cifar import DATA_ROOT
+from dataset_download_scripts.cifar import DATA_ROOT
 
 # ──────────────────────────────────────────────────────────────
 # Configuration
