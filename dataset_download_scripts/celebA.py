@@ -1,10 +1,10 @@
 from torchvision import datasets
 import os
 
-DATA_ROOT = "/scratch/ram1g23/datasets/celeba"
+CELEBA_ROOT = "/scratch/ram1g23/datasets/celeba"
 
-os.makedirs(DATA_ROOT, exist_ok=True)
+os.makedirs(CELEBA_ROOT, exist_ok=True)
 
-datasets.CelebA(root=DATA_ROOT, split="all", target_type="attr", download=True)
+datasets.CelebA(root=CELEBA_ROOT, split="all", target_type="attr", download=True)
 
-print("CelebA downloaded to:", DATA_ROOT)
+print("CelebA downloaded to:", CELEBA_ROOT)
