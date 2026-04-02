@@ -15,7 +15,7 @@ from torchmetrics.image.fid import FrechetInceptionDistance
 from torchvision import transforms, datasets
 from tqdm import tqdm
 
-from dataset_download_scripts.cifar import DATA_ROOT
+from dataset_download_scripts.cifar import CIFAR10_ROOT
 from utils.flow_obj import FlowModelObj
 
 
@@ -410,7 +410,7 @@ def load_real_images_efficiently(num_samples, batch_size=256, num_workers=4):
     """
     transform = transforms.Compose([transforms.ToTensor()])
     # train=True: use the 50k training set — standard for FID real statistics
-    dataset = datasets.CIFAR10(root=DATA_ROOT, train=True, download=False, transform=transform)
+    dataset = datasets.CIFAR10(root=CIFAR10_ROOT, train=True, download=False, transform=transform)
 
     available = len(dataset)
     if num_samples > available:

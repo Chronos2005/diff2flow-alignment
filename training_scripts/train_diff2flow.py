@@ -14,7 +14,7 @@ from torchvision import transforms, datasets, utils
 from diffusers import UNet2DModel, DDPMScheduler
 
 from utils.flow_obj import FlowModelObj
-from dataset_download_scripts.cifar import DATA_ROOT
+from dataset_download_scripts.cifar import CIFAR10_ROOT
 
 # --- Argument parsing ---
 parser = argparse.ArgumentParser()
@@ -57,7 +57,7 @@ transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize([0.5], [0.5]),
 ])
-dataset = datasets.CIFAR10(root=DATA_ROOT, train=True, download=False, transform=transform)
+dataset = datasets.CIFAR10(root=CIFAR10_ROOT, train=True, download=False, transform=transform)
 loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
 
 # --- Load pretrained diffusion UNet (local only, no network) ---

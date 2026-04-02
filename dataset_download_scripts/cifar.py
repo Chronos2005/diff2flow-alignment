@@ -2,12 +2,12 @@ from torchvision import datasets
 import os
 
 # Updated path to match new location
-DATA_ROOT = os.path.expanduser(
-    "~/Projects/diff2flow-alignment/datasets/cifar10"
+CIFAR10_ROOT = os.path.expanduser(
+    "/scratch/ram1g23/datasets/cifar10"
 )
 
 # Download CIFAR-10 (if not already present)
-datasets.CIFAR10(root=DATA_ROOT, train=True, download=True)
-datasets.CIFAR10(root=DATA_ROOT, train=False, download=True)
+datasets.CIFAR10(root=CIFAR10_ROOT, train=True, download=True)
+datasets.CIFAR10(root=CIFAR10_ROOT, train=False, download=True)
 
-print("CIFAR-10 downloaded to:", DATA_ROOT)
+print("CIFAR-10 downloaded to:", CIFAR10_ROOT)
