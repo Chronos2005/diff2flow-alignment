@@ -7,10 +7,11 @@ from diffusers.optimization import get_cosine_schedule_with_warmup
 import os
 from tqdm import tqdm
 from PIL import Image
+from dataset_download_scripts.celebA import CELEBA_ROOT
 
 # --- Configuration ---
 CONFIG = {
-    "data_root": "/scratch/ram1g23/datasets/celeba",      # Path to CelebA data root
+    "data_root": CELEBA_ROOT,      # Path to CelebA data root
     "image_size": 64,               # CelebA faces work well at 64x64
     "train_batch_size": 64,         # Reduced from 128 due to larger image size
     "num_epochs": 100,

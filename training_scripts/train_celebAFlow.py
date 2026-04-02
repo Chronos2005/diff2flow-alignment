@@ -8,10 +8,11 @@ import os
 from tqdm import tqdm
 from PIL import Image
 import numpy as np
+from dataset_download_scripts.celebA import CELEBA_ROOT
 
 # --- Configuration ---
 CONFIG = {
-    "data_root": "/scratch/ram1g23/datasets/celeba",
+    "data_root": CELEBA_ROOT,
     "image_size": 64,
     "train_batch_size": 64,
     "num_epochs": 100,
