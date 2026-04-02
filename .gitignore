@@ -5,3 +5,4 @@ logs/
 *.json
 *.safetensors
 datasets/
+.idea/
