@@ -9,6 +9,7 @@ from PIL import Image
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm
+from accelerate import Accelerator
 
 
 def parse_args():
@@ -131,13 +132,15 @@ def main():
             from dataset_download_scripts.celebA import CELEBA_ROOT
             args.data_root = CELEBA_ROOT
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    os.makedirs(args.output_dir, exist_ok=True)
-    os.makedirs(f"{args.output_dir}/samples", exist_ok=True)
+    accelerator = Accelerator()
+    device = accelerator.device
 
-    print(f"Dataset:      {args.dataset}")
-    print(f"Training on:  {device}")
-    print(f"Output dir:   {args.output_dir}")
+    if accelerator.is_main_process:
+        os.makedirs(args.output_dir, exist_ok=True)
+        os.makedirs(f"{args.output_dir}/samples", exist_ok=True)
+        print(f"Dataset:      {args.dataset}")
+        print(f"Training on:  {device} ({accelerator.num_processes} GPU(s))")
+        print(f"Output dir:   {args.output_dir}")
 
     dataset = get_dataset(args)
     dataloader = DataLoader(
@@ -148,11 +151,15 @@ def main():
         pin_memory=True,
         drop_last=True,
     )
-    print(f"Dataset size: {len(dataset):,} images")
 
-    model = build_model(args.image_size).to(device)
-    num_params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f"Model parameters: {num_params:.1f}M")
+    if accelerator.is_main_process:
+        print(f"Dataset size: {len(dataset):,} images")
+
+    model = build_model(args.image_size)
+
+    if accelerator.is_main_process:
+        num_params = sum(p.numel() for p in model.parameters()) / 1e6
+        print(f"Model parameters: {num_params:.1f}M")
 
     noise_scheduler = DDPMScheduler(num_train_timesteps=args.num_train_timesteps)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
@@ -162,15 +169,18 @@ def main():
         num_training_steps=len(dataloader) * args.num_epochs,
     )
 
+    model, optimizer, dataloader, lr_scheduler = accelerator.prepare(
+        model, optimizer, dataloader, lr_scheduler
+    )
+
     global_step = 0
 
     for epoch in range(args.num_epochs):
         model.train()
         epoch_loss = 0.0
-        progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{args.num_epochs}")
+        progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{args.num_epochs}", disable=not accelerator.is_main_process)
 
         for batch in progress_bar:
-            # CelebA returns (images, attrs); CIFAR-10 returns (images, labels)
             images = batch[0].to(device)
             batch_size = images.shape[0]
 
@@ -185,7 +195,7 @@ def main():
             loss = F.mse_loss(noise_pred, noise)
 
             optimizer.zero_grad()
-            loss.backward()
+            accelerator.backward(loss)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             lr_scheduler.step()
@@ -194,13 +204,15 @@ def main():
             progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
             global_step += 1
 
-        avg_loss = epoch_loss / len(dataloader)
-        print(f"Epoch {epoch+1} avg loss: {avg_loss:.4f}")
+        if accelerator.is_main_process:
+            avg_loss = epoch_loss / len(dataloader)
+            print(f"Epoch {epoch+1} avg loss: {avg_loss:.4f}")
 
-        if (epoch + 1) % args.save_images_every == 0:
-            model.eval()
+        if (epoch + 1) % args.save_images_every == 0 and accelerator.is_main_process:
+            unwrapped = accelerator.unwrap_model(model)
+            unwrapped.eval()
             with torch.no_grad():
-                pipeline = DDPMPipeline(unet=model, scheduler=noise_scheduler)
+                pipeline = DDPMPipeline(unet=unwrapped, scheduler=noise_scheduler)
                 sample_images = pipeline(
                     batch_size=16,
                     num_inference_steps=args.num_inference_steps,
@@ -211,13 +223,17 @@ def main():
                 print(f"Saved samples → {save_path}")
             model.train()
 
-        if (epoch + 1) % args.save_model_every == 0:
+        if (epoch + 1) % args.save_model_every == 0 and accelerator.is_main_process:
+            unwrapped = accelerator.unwrap_model(model)
             checkpoint_dir = f"{args.output_dir}/checkpoint_epoch_{epoch+1}"
-            model.save_pretrained(checkpoint_dir)
+            unwrapped.save_pretrained(checkpoint_dir)
             print(f"Saved checkpoint → {checkpoint_dir}")
 
-    model.save_pretrained(f"{args.output_dir}/final_model")
-    print("Training complete!")
+    accelerator.wait_for_everyone()
+    if accelerator.is_main_process:
+        unwrapped = accelerator.unwrap_model(model)
+        unwrapped.save_pretrained(f"{args.output_dir}/final_model")
+        print("Training complete!")
 
 
 if __name__ == "__main__":
