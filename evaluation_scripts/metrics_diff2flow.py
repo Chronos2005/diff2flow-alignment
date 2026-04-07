@@ -30,29 +30,24 @@ Usage:
 
 import argparse
 import json
-import math
 import os
 import shutil
+import sys
 import time
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import torch
-import numpy as np
 from diffusers import DDPMScheduler, UNet2DModel
 from PIL import Image
 from tqdm import tqdm
 
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.aligner import Diff2FlowAligner
+from shared.lora import apply_lora
+from shared.utils import tensor_to_pil, make_grid
 
-# Import the aligner and LoRA utilities from the inference script
-from inference_scripts.inference_diff2flow import (
-    Diff2FlowAligner,
-    apply_lora,
-    sample_euler,
-    tensor_to_pil,
-    make_grid,
-)
+# Import sampling function from the inference script
+from inference_scripts.inference_diff2flow import sample_euler
 
 
 def parse_args():
@@ -112,16 +107,9 @@ def prepare_real_images(args, output_dir):
 
     if args.dataset == "cifar10":
         from torchvision import datasets, transforms
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-        ])
-        data_root = args.data_root
-        if data_root is None:
-            try:
-                from dataset_download_scripts.cifar import CIFAR10_ROOT
-                data_root = CIFAR10_ROOT
-            except ImportError:
-                data_root = "./data"
+        transform = transforms.Compose([transforms.ToTensor()])
+        from shared.datasets import get_data_root
+        data_root = get_data_root("cifar10", args.data_root)
         dataset = datasets.CIFAR10(root=data_root, train=True, download=False, transform=transform)
 
     elif args.dataset == "celeba":
@@ -131,23 +119,18 @@ def prepare_real_images(args, output_dir):
             transforms.Resize(args.image_size),
             transforms.ToTensor(),
         ])
-        data_root = args.data_root
-        if data_root is None:
-            try:
-                from dataset_download_scripts.celebA import CELEBA_ROOT
-                data_root = CELEBA_ROOT
-            except ImportError:
-                data_root = "./data"
+        from shared.datasets import get_data_root
+        data_root = get_data_root("celeba", args.data_root)
         dataset = datasets.CelebA(root=data_root, split="train", download=False, transform=transform)
 
     elif args.dataset == "custom":
         if args.data_root is None:
             raise ValueError("--data_root must be specified for custom dataset")
-        return args.data_root  # assume it's already a folder of images
+        return args.data_root
 
     num_to_save = min(args.num_samples, len(dataset))
     for i in tqdm(range(num_to_save), desc="Saving real images"):
-        img_tensor = dataset[i][0]  # (C, H, W) in [0, 1]
+        img_tensor = dataset[i][0]
         img = Image.fromarray((img_tensor.permute(1, 2, 0).numpy() * 255).astype("uint8"))
         img.save(os.path.join(real_dir, f"{i:06d}.png"))
 
@@ -179,7 +162,6 @@ def generate_and_save_samples(model, aligner, num_samples, image_size, num_steps
         bs = min(batch_size, num_samples - num_generated)
         batch_seed = seed + batch_idx if seed is not None else None
 
-        # Time the sampling
         torch.cuda.synchronize() if device.type == "cuda" else None
         t_start = time.time()
 
@@ -196,9 +178,8 @@ def generate_and_save_samples(model, aligner, num_samples, image_size, num_steps
         t_end = time.time()
 
         total_time += (t_end - t_start)
-        total_nfe += bs * num_steps  # each sample takes num_steps model evaluations
+        total_nfe += bs * num_steps
 
-        # Save images
         pil_images = tensor_to_pil(samples)
         for i, img in enumerate(pil_images):
             img.save(os.path.join(sample_dir, f"{num_generated + i:06d}.png"))
@@ -216,9 +197,7 @@ def generate_and_save_samples(model, aligner, num_samples, image_size, num_steps
 # ---------------------------------------------------------------------------
 
 def compute_fid_torch_fidelity(real_dir, fake_dir):
-    """Compute FID using torch-fidelity."""
     import torch_fidelity
-
     metrics = torch_fidelity.calculate_metrics(
         input1=fake_dir,
         input2=real_dir,
@@ -230,18 +209,12 @@ def compute_fid_torch_fidelity(real_dir, fake_dir):
 
 
 def compute_fid_clean_fid(real_dir, fake_dir):
-    """Compute FID using clean-fid."""
     from cleanfid import fid
-
-    score = fid.compute_fid(real_dir, fake_dir)
-    return score
+    return fid.compute_fid(real_dir, fake_dir)
 
 
 def compute_fid(real_dir, fake_dir, backend="auto"):
-    """Compute FID using the available library."""
-
     if backend == "auto":
-        # Try torch_fidelity first, then clean_fid
         try:
             import torch_fidelity
             backend = "torch_fidelity"
@@ -271,7 +244,6 @@ def compute_fid(real_dir, fake_dir, backend="auto"):
 def main():
     args = parse_args()
 
-    # Device
     if args.device:
         device = torch.device(args.device)
     else:
@@ -280,9 +252,7 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # -----------------------------------------------------------------------
     # Load model
-    # -----------------------------------------------------------------------
     print("Loading model...")
     from safetensors.torch import load_file as load_safetensors
 
@@ -303,20 +273,14 @@ def main():
 
     print(f"Loaded safetensors checkpoint: {args.checkpoint_path}")
 
-    # -----------------------------------------------------------------------
     # Build aligner
-    # -----------------------------------------------------------------------
     noise_scheduler = DDPMScheduler(num_train_timesteps=args.num_train_timesteps)
     aligner = Diff2FlowAligner(noise_scheduler)
 
-    # -----------------------------------------------------------------------
     # Prepare real images for FID
-    # -----------------------------------------------------------------------
     real_dir = prepare_real_images(args, args.output_dir)
 
-    # -----------------------------------------------------------------------
     # Evaluate across step counts
-    # -----------------------------------------------------------------------
     results = []
 
     for num_steps in sorted(args.step_counts):
@@ -324,7 +288,6 @@ def main():
         print(f"Evaluating: {num_steps} Euler steps (NFE per sample = {num_steps})")
         print(f"{'='*60}")
 
-        # Generate samples
         sample_dir, total_time, total_nfe = generate_and_save_samples(
             model, aligner,
             num_samples=args.num_samples,
@@ -336,12 +299,10 @@ def main():
             output_dir=args.output_dir,
         )
 
-        # Compute FID
         fid_score = compute_fid(real_dir, sample_dir, backend=args.fid_backend)
 
-        # Compute timing stats
         time_per_image = total_time / args.num_samples
-        nfe_per_image = num_steps  # Euler: 1 model call per step
+        nfe_per_image = num_steps
         images_per_second = args.num_samples / total_time
 
         result = {
@@ -360,13 +321,10 @@ def main():
         print(f"  Time/image:  {time_per_image:.5f}s")
         print(f"  Images/sec:  {images_per_second:.2f}")
 
-        # Clean up generated images unless asked to keep them
         if not args.keep_samples:
             shutil.rmtree(sample_dir)
 
-    # -----------------------------------------------------------------------
     # Summary
-    # -----------------------------------------------------------------------
     print(f"\n{'='*60}")
     print("SUMMARY")
     print(f"{'='*60}")
@@ -388,7 +346,7 @@ def main():
         }, f, indent=2)
     print(f"\nResults saved to {results_path}")
 
-    # Save results as CSV for easy plotting
+    # Save results as CSV
     csv_path = os.path.join(args.output_dir, "evaluation_results.csv")
     with open(csv_path, "w") as f:
         f.write("steps,nfe,fid,time_per_image,images_per_second\n")

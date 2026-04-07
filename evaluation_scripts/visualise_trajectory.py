@@ -32,6 +32,9 @@ from sklearn.decomposition import PCA
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from utils.flow_obj import FlowModelObj
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.utils import build_schedule
+
 # ──────────────────────────────────────────────────────────────
 # Config defaults
 # ──────────────────────────────────────────────────────────────
@@ -52,17 +55,6 @@ DEFAULTS = dict(
 # ──────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────
-def build_schedule(num_timesteps: int):
-    """DDPM linear beta schedule."""
-    betas = np.linspace(0.0001, 0.02, num_timesteps, dtype=np.float64)
-    alphas = 1.0 - betas
-    alphas_cumprod = np.cumprod(alphas, axis=0)
-    return {
-        "betas": betas,
-        "alphas_cumprod": alphas_cumprod,
-    }
-
-
 def tensor_to_pil(x):
     """(C,H,W) tensor in [-1,1] → PIL Image."""
     x = x.clamp(-1, 1).float()
@@ -78,9 +70,7 @@ def compute_straightness(trajectory):
     Returns a float in (0, 1]. 1.0 = perfectly straight.
     """
     vecs = [t.numpy().flatten() for t in trajectory]
-    # Straight-line distance: first → last
     straight = np.linalg.norm(vecs[-1] - vecs[0])
-    # Arc length: sum of consecutive distances
     arc = sum(np.linalg.norm(vecs[i+1] - vecs[i]) for i in range(len(vecs) - 1))
     if arc < 1e-10:
         return 1.0
@@ -189,10 +179,6 @@ def select_snapshots(trajectory, num_snapshots):
 
 
 def plot_strips(trajs, labels, num_snapshots, save_path):
-    """
-    Image strip for a single sample per model.
-    trajs  : dict  label → list of (C,H,W) tensors (one trajectory)
-    """
     n_rows = len(labels)
     fig, axes = plt.subplots(
         n_rows, num_snapshots,
@@ -226,13 +212,7 @@ def plot_strips(trajs, labels, num_snapshots, save_path):
 
 
 def plot_pca_bundle(all_trajs, labels, save_path):
-    """
-    Bundled PCA: N trajectories per model, all projected into the same 2D space.
-    all_trajs: dict  label → list of trajectories, each trajectory = list of (C,H,W) tensors
-    """
-    # Flatten every waypoint from every trajectory from every model
     all_flat = []
-    # Keep track of structure: (label, sample_idx, waypoint_idx)
     structure = []
     for label in labels:
         for s_idx, traj in enumerate(all_trajs[label]):
@@ -244,8 +224,6 @@ def plot_pca_bundle(all_trajs, labels, save_path):
     pca = PCA(n_components=2)
     X2 = pca.fit_transform(X)
 
-    # Rebuild projected trajectories
-    # label → list of (N_waypoints, 2) arrays
     proj_trajs = {label: [] for label in labels}
     idx = 0
     for label in labels:
@@ -254,7 +232,6 @@ def plot_pca_bundle(all_trajs, labels, save_path):
             proj_trajs[label].append(X2[idx: idx + n_wp])
             idx += n_wp
 
-    # Colours
     cmap = plt.cm.get_cmap("tab10")
     colours = {label: cmap(i) for i, label in enumerate(labels)}
 
@@ -263,22 +240,18 @@ def plot_pca_bundle(all_trajs, labels, save_path):
     for label in labels:
         colour = colours[label]
         trajectories_2d = proj_trajs[label]
-        n = len(trajectories_2d)
 
-        # Draw each trajectory as a thin, semi-transparent line
         for i, pts in enumerate(trajectories_2d):
-            lbl = label if i == 0 else None  # legend only once
+            lbl = label if i == 0 else None
             ax.plot(pts[:, 0], pts[:, 1], "-", color=colour,
                     alpha=0.15, linewidth=0.8, label=lbl)
 
-        # Draw start/end markers on all trajectories
         for pts in trajectories_2d:
             ax.scatter(pts[0, 0], pts[0, 1], marker="o", s=20, color=colour,
                        edgecolors="black", linewidths=0.3, alpha=0.35, zorder=5)
             ax.scatter(pts[-1, 0], pts[-1, 1], marker="*", s=45, color=colour,
                        edgecolors="black", linewidths=0.3, alpha=0.35, zorder=5)
 
-        # Draw the MEAN trajectory as a thick line
         min_len = min(len(t) for t in trajectories_2d)
         stacked = np.stack([t[:min_len] for t in trajectories_2d], axis=0)
         mean_traj = stacked.mean(axis=0)
@@ -301,10 +274,6 @@ def plot_pca_bundle(all_trajs, labels, save_path):
 
 
 def plot_straightness(straightness, labels, save_path):
-    """
-    Box + strip plot of straightness scores per model.
-    straightness: dict  label → list of floats
-    """
     cmap = plt.cm.get_cmap("tab10")
     colours = [cmap(i) for i in range(len(labels))]
 
@@ -320,7 +289,6 @@ def plot_straightness(straightness, labels, save_path):
         patch.set_facecolor((*colour[:3], 0.4))
         patch.set_edgecolor(colour)
 
-    # Overlay individual points (jittered)
     for i, (label, vals) in enumerate(zip(labels, data)):
         x_jitter = np.random.default_rng(42).normal(0, 0.04, len(vals)) + (i + 1)
         ax.scatter(x_jitter, vals, color=colours[i], alpha=0.4, s=15, zorder=5)
@@ -336,7 +304,6 @@ def plot_straightness(straightness, labels, save_path):
 
 
 def save_metrics(straightness, labels, save_path):
-    """Save numerical summary to a text file."""
     lines = ["Trajectory Straightness (straight-line / arc-length)", "=" * 55]
     for label in labels:
         vals = straightness[label]
@@ -352,7 +319,7 @@ def save_metrics(straightness, labels, save_path):
 
 
 # ──────────────────────────────────────────────────────────────
-# Model loaders (loaded once, used for all samples)
+# Model loaders
 # ──────────────────────────────────────────────────────────────
 def load_ddpm(args, device):
     return UNet2DModel.from_pretrained(args.ddpm_model).to(device).eval()
@@ -392,6 +359,44 @@ def load_diff2flow(args, device):
 
 
 # ──────────────────────────────────────────────────────────────
+# Schedule helper for Diff2Flow
+# ──────────────────────────────────────────────────────────────
+def _register_schedule_from_betas(flow_model, betas):
+    """Register DDPM schedule buffers on a FlowModelObj."""
+    betas = betas.detach().cpu().numpy()
+    alphas = 1.0 - betas
+    alphas_cumprod = alphas.cumprod(axis=0)
+    alphas_cumprod_full = np.append(1.0, alphas_cumprod)
+
+    try:
+        dev = next(flow_model.parameters()).device
+    except StopIteration:
+        dev = torch.device("cpu")
+    to_t = lambda x: torch.tensor(x, dtype=torch.float32, device=dev)
+
+    flow_model.num_timesteps = int(betas.shape[0])
+    flow_model.register_buffer("betas", to_t(betas))
+    flow_model.register_buffer("alphas_cumprod", to_t(alphas_cumprod))
+    flow_model.register_buffer("alphas_cumprod_full", to_t(alphas_cumprod_full))
+    flow_model.register_buffer("sqrt_alphas_cumprod", to_t(np.sqrt(alphas_cumprod)))
+    flow_model.register_buffer("sqrt_one_minus_alphas_cumprod", to_t(np.sqrt(1.0 - alphas_cumprod)))
+    flow_model.register_buffer("sqrt_alphas_cumprod_full", to_t(np.sqrt(alphas_cumprod_full)))
+    flow_model.register_buffer("sqrt_one_minus_alphas_cumprod_full", to_t(np.sqrt(1.0 - alphas_cumprod_full)))
+    flow_model.register_buffer("sqrt_recip_alphas_cumprod", to_t(np.sqrt(1.0 / alphas_cumprod)))
+    flow_model.register_buffer("sqrt_recipm1_alphas_cumprod", to_t(np.sqrt(1.0 / alphas_cumprod - 1.0)))
+    flow_model.register_buffer(
+        "rectified_alphas_cumprod_full",
+        flow_model.sqrt_alphas_cumprod_full /
+        (flow_model.sqrt_alphas_cumprod_full + flow_model.sqrt_one_minus_alphas_cumprod_full),
+    )
+    flow_model.register_buffer(
+        "rectified_sqrt_alphas_cumprod_full",
+        flow_model.sqrt_one_minus_alphas_cumprod_full /
+        (flow_model.sqrt_alphas_cumprod_full + flow_model.sqrt_one_minus_alphas_cumprod_full),
+    )
+
+
+# ──────────────────────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────────────────────
 def parse_args():
@@ -424,15 +429,13 @@ def main():
     print(f"Samples per model: {args.num_samples}")
     print(f"Steps per trajectory: {args.num_steps}")
 
-    # Generate all starting noises (shared across models)
     torch.manual_seed(args.seed)
     all_z = [torch.randn(1, 3, args.image_size, args.image_size, device=device)
              for _ in range(args.num_samples)]
 
-    # Containers: label → list of trajectories
-    all_trajs = {}       # for PCA bundle (all N samples)
-    single_trajs = {}    # for image strip (just sample 0)
-    straightness = {}    # label → list of floats
+    all_trajs = {}
+    single_trajs = {}
+    straightness = {}
     labels = []
     schedule = build_schedule(1000)
 
@@ -500,69 +503,27 @@ def main():
     # ---- Plot ----
     print("\nGenerating plots …")
 
-    # 1) Image strip (first sample only)
     plot_strips(
         single_trajs, labels, args.num_snapshots,
         os.path.join(args.output_dir, "trajectory_strips.png"),
     )
 
-    # 2) PCA bundle (all N samples)
     plot_pca_bundle(
         all_trajs, labels,
         os.path.join(args.output_dir, "trajectory_pca_bundle.png"),
     )
 
-    # 3) Straightness boxplot
     plot_straightness(
         straightness, labels,
         os.path.join(args.output_dir, "straightness_boxplot.png"),
     )
 
-    # 4) Numerical metrics
     save_metrics(
         straightness, labels,
         os.path.join(args.output_dir, "metrics.txt"),
     )
 
     print("\nDone ✓")
-
-
-# ──────────────────────────────────────────────────────────────
-# Schedule helper for Diff2Flow  (copied from diff2flow.py)
-# ──────────────────────────────────────────────────────────────
-def _register_schedule_from_betas(flow_model, betas):
-    """Register DDPM schedule buffers on a FlowModelObj."""
-    betas = betas.detach().cpu().numpy()
-    alphas = 1.0 - betas
-    alphas_cumprod = alphas.cumprod(axis=0)
-    alphas_cumprod_full = np.append(1.0, alphas_cumprod)
-
-    try:
-        dev = next(flow_model.parameters()).device
-    except StopIteration:
-        dev = torch.device("cpu")
-    to_t = lambda x: torch.tensor(x, dtype=torch.float32, device=dev)
-
-    flow_model.num_timesteps = int(betas.shape[0])
-    flow_model.register_buffer("betas", to_t(betas))
-    flow_model.register_buffer("alphas_cumprod", to_t(alphas_cumprod))
-    flow_model.register_buffer("alphas_cumprod_full", to_t(alphas_cumprod_full))
-    flow_model.register_buffer("sqrt_alphas_cumprod", to_t(np.sqrt(alphas_cumprod)))
-    flow_model.register_buffer("sqrt_one_minus_alphas_cumprod", to_t(np.sqrt(1.0 - alphas_cumprod)))
-    flow_model.register_buffer("sqrt_alphas_cumprod_full", to_t(np.sqrt(alphas_cumprod_full)))
-    flow_model.register_buffer("sqrt_one_minus_alphas_cumprod_full", to_t(np.sqrt(1.0 - alphas_cumprod_full)))
-    flow_model.register_buffer("sqrt_recip_alphas_cumprod", to_t(np.sqrt(1.0 / alphas_cumprod)))
-    flow_model.register_buffer("sqrt_recipm1_alphas_cumprod", to_t(np.sqrt(1.0 / alphas_cumprod - 1.0)))
-    flow_model.register_buffer(
-        "rectified_alphas_cumprod_full",
-        flow_model.sqrt_alphas_cumprod_full /
-        (flow_model.sqrt_alphas_cumprod_full + flow_model.sqrt_one_minus_alphas_cumprod_full),
-    )
-    flow_model.register_buffer(
-        "rectified_sqrt_alphas_cumprod_full",
-        flow_model.sqrt_one_minus_alphas_cumprod_full /
-        (flow_model.sqrt_alphas_cumprod_full + flow_model.sqrt_one_minus_alphas_cumprod_full),
-    )
 
 
 if __name__ == "__main__":

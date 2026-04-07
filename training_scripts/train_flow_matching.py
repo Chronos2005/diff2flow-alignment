@@ -5,34 +5,24 @@ import argparse
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torchvision import transforms, datasets
 from diffusers import UNet2DModel
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from accelerate import Accelerator
 from tqdm import tqdm
-from PIL import Image
 import numpy as np
-from dataset_download_scripts.cifar import CIFAR10_ROOT
-from dataset_download_scripts.celebA import CELEBA_ROOT
 
+from shared.datasets import DATASET_DEFAULTS, CIFAR10_ROOT, CELEBA_ROOT, get_dataset, get_data_root
+from shared.utils import make_grid, tensor_to_pil
 
-# --- Dataset configs ---
+# --- Dataset configs (extends shared defaults with FM-specific fields) ---
 DATASET_CONFIGS = {
     "cifar10": {
-        "image_size": 32,
-        "train_batch_size": 128,
-        "num_epochs": 50,
-        "output_dir": "flow_matching_cifar10",
         "block_out_channels": (128, 128, 256, 256, 512, 512),
-        "data_root": CIFAR10_ROOT,
+        "output_dir": "flow_matching_cifar10",
     },
     "celeba": {
-        "image_size": 128,
-        "train_batch_size": 128,
-        "num_epochs": 100,
-        "output_dir": "flow_matching_celeba",
         "block_out_channels": (128, 128, 256, 256, 512, 512),
-        "data_root": CELEBA_ROOT,
+        "output_dir": "flow_matching_celeba",
     },
 }
 
@@ -69,47 +59,6 @@ class FlowMatching:
         return x
 
 
-def get_dataset(dataset_name, data_root, image_size):
-    if dataset_name == "cifar10":
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
-        ])
-        dataset = datasets.CIFAR10(
-            root=data_root,
-            train=True,
-            download=False,
-            transform=transform,
-        )
-    elif dataset_name == "celeba":
-        transform = transforms.Compose([
-            transforms.CenterCrop(178),
-            transforms.Resize(image_size),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-        ])
-        dataset = datasets.CelebA(
-            root=data_root,
-            split="all",
-            target_type="attr",
-            download=False,
-            transform=transform,
-        )
-    else:
-        raise ValueError(f"Unknown dataset: {dataset_name}")
-
-    return dataset
-
-
-def make_grid(images, rows, cols):
-    w, h = images[0].size
-    grid = Image.new("RGB", size=(cols * w, rows * h))
-    for i, image in enumerate(images):
-        grid.paste(image, box=(i % cols * w, i // cols * h))
-    return grid
-
-
 def main():
     parser = argparse.ArgumentParser(description="Train a Flow Matching model on CIFAR-10 or CelebA")
 
@@ -130,19 +79,20 @@ def main():
 
     args = parser.parse_args()
 
-    # Initialize Accelerator — handles DDP, device placement, mixed precision
+    # Initialize Accelerator
     accelerator = Accelerator(
         mixed_precision=args.mixed_precision,
         gradient_accumulation_steps=1,
     )
 
     # Merge dataset defaults with CLI overrides
-    defaults = DATASET_CONFIGS[args.dataset]
+    defaults = DATASET_DEFAULTS[args.dataset]
+    fm_config = DATASET_CONFIGS[args.dataset]
     image_size = args.image_size or defaults["image_size"]
     per_gpu_batch_size = args.batch_size or defaults["train_batch_size"]
     num_epochs = args.num_epochs or defaults["num_epochs"]
-    output_dir = args.output_dir or defaults["output_dir"]
-    data_root = args.data_root or defaults["data_root"]
+    output_dir = args.output_dir or fm_config["output_dir"]
+    data_root = get_data_root(args.dataset, args.data_root)
 
     if accelerator.is_main_process:
         os.makedirs(output_dir, exist_ok=True)
@@ -154,7 +104,7 @@ def main():
     accelerator.print(f"Mixed prec  : {args.mixed_precision}")
     accelerator.print(f"Image sz    : {image_size}  |  Batch/GPU: {per_gpu_batch_size}  |  Effective batch: {per_gpu_batch_size * accelerator.num_processes}  |  Epochs: {num_epochs}")
 
-    # Data — Accelerate handles DistributedSampler automatically via prepare()
+    # Data
     dataset = get_dataset(args.dataset, data_root, image_size)
     dataloader = DataLoader(
         dataset,
@@ -172,7 +122,7 @@ def main():
         in_channels=3,
         out_channels=3,
         layers_per_block=2,
-        block_out_channels=defaults["block_out_channels"],
+        block_out_channels=fm_config["block_out_channels"],
         down_block_types=(
             "DownBlock2D",
             "DownBlock2D",
@@ -203,8 +153,6 @@ def main():
         num_training_steps=len(dataloader) * num_epochs,
     )
 
-    # Accelerate prepares everything — wraps model in DDP, moves to device,
-    # sets up distributed sampler, and wraps optimizer/scheduler
     model, optimizer, dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, dataloader, lr_scheduler
     )
@@ -234,15 +182,13 @@ def main():
         )
 
         for batch in progress_bar:
-            # CelebA returns (images, attrs); CIFAR-10 returns (images, labels)
-            images = batch[0]  # Accelerate already placed on the right device
+            images = batch[0]
             current_batch_size = images.shape[0]
 
             noise = torch.randn_like(images)
             t = flow_matching.sample_time(current_batch_size, images.device)
             x_t, v_target = flow_matching.compute_conditional_flow(noise, images, t)
 
-            # Use float timesteps for consistency with sampling
             t_scaled = t * 999.0
             v_pred = model(x_t, t_scaled, return_dict=False)[0]
 
@@ -273,11 +219,8 @@ def main():
                     num_steps=args.num_inference_steps,
                     device=accelerator.device,
                 )
-                samples = torch.clamp((samples + 1) / 2, 0, 1)
-                pil_images = []
-                for i in range(16):
-                    img = (samples[i].cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
-                    pil_images.append(Image.fromarray(img))
+                samples = samples.clamp(-1, 1)
+                pil_images = tensor_to_pil(samples)
                 grid = make_grid(pil_images, rows=4, cols=4)
                 save_path = f"{output_dir}/samples/epoch_{epoch+1}.png"
                 grid.save(save_path)

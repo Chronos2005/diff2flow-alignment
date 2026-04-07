@@ -1,9 +1,14 @@
 import argparse
 import math
 import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import torch
 from diffusers import DDPMPipeline, DDPMScheduler, UNet2DModel
 from PIL import Image
+
+from shared.utils import make_grid
 
 
 def parse_args():
@@ -23,14 +28,6 @@ def parse_args():
                         help="Random seed for reproducibility")
 
     return parser.parse_args()
-
-
-def make_grid(images, rows, cols):
-    w, h = images[0].size
-    grid = Image.new("RGB", size=(cols * w, rows * h))
-    for i, image in enumerate(images):
-        grid.paste(image, box=(i % cols * w, i // cols * h))
-    return grid
 
 
 @torch.inference_mode()

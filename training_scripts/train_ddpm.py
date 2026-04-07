@@ -1,15 +1,20 @@
 import argparse
 import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import torch
 import torch.nn.functional as F
 from diffusers import DDPMPipeline, DDPMScheduler, UNet2DModel
 from diffusers.optimization import get_cosine_schedule_with_warmup
-from PIL import Image
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
 from tqdm import tqdm
 from accelerate import Accelerator
+
+from shared.datasets import DATASET_DEFAULTS, get_dataset, get_data_root
+from shared.utils import make_grid
+
+OUTPUT_DIRS = {"cifar10": "ddpm_cifar10", "celeba": "ddpm_celeba"}
 
 
 def parse_args():
@@ -26,7 +31,7 @@ def parse_args():
         "--data_root",
         type=str,
         default=None,
-        help="Path to the dataset root directory (defaults to the path defined in the dataset download script)",
+        help="Path to the dataset root directory",
     )
     parser.add_argument(
         "--output_dir",
@@ -46,38 +51,6 @@ def parse_args():
     parser.add_argument("--num_inference_steps", type=int, default=1000)
 
     return parser.parse_args()
-
-
-DATASET_DEFAULTS = {
-    "cifar10": {"image_size": 32, "train_batch_size": 128, "num_epochs": 50,  "output_dir": "ddpm_cifar10"},
-    "celeba":  {"image_size": 128, "train_batch_size": 128, "num_epochs": 100, "output_dir": "ddpm_celeba"},
-}
-
-
-def get_dataset(args):
-    if args.dataset == "cifar10":
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
-        ])
-        return datasets.CIFAR10(
-            root=args.data_root, train=True, download=False, transform=transform
-        )
-    elif args.dataset == "celeba":
-        transform = transforms.Compose([
-            transforms.CenterCrop(178),
-            transforms.Resize(args.image_size),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-        ])
-        return datasets.CelebA(
-            root=args.data_root,
-            split="train",
-            target_type="attr",
-            download=False,
-            transform=transform,
-        )
 
 
 def build_model(image_size):
@@ -106,14 +79,6 @@ def build_model(image_size):
     )
 
 
-def make_grid(images, rows, cols):
-    w, h = images[0].size
-    grid = Image.new("RGB", size=(cols * w, rows * h))
-    for i, image in enumerate(images):
-        grid.paste(image, box=(i % cols * w, i // cols * h))
-    return grid
-
-
 def main():
     args = parse_args()
 
@@ -123,14 +88,10 @@ def main():
         if getattr(args, key) is None:
             setattr(args, key, val)
 
-    # Fall back to the path defined in the dataset download script
-    if args.data_root is None:
-        if args.dataset == "cifar10":
-            from dataset_download_scripts.cifar import CIFAR10_ROOT
-            args.data_root = CIFAR10_ROOT
-        elif args.dataset == "celeba":
-            from dataset_download_scripts.celebA import CELEBA_ROOT
-            args.data_root = CELEBA_ROOT
+    if args.output_dir is None:
+        args.output_dir = OUTPUT_DIRS[args.dataset]
+
+    args.data_root = get_data_root(args.dataset, args.data_root)
 
     accelerator = Accelerator()
     device = accelerator.device
@@ -142,7 +103,7 @@ def main():
         print(f"Training on:  {device} ({accelerator.num_processes} GPU(s))")
         print(f"Output dir:   {args.output_dir}")
 
-    dataset = get_dataset(args)
+    dataset = get_dataset(args.dataset, args.data_root, args.image_size)
     dataloader = DataLoader(
         dataset,
         batch_size=args.train_batch_size,

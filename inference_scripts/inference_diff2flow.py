@@ -28,125 +28,18 @@ Usage:
 import argparse
 import math
 import os
+import sys
 import time
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import torch
 from diffusers import DDPMScheduler, UNet2DModel
 from PIL import Image
 
-
-# ---------------------------------------------------------------------------
-# Diff2Flow Aligner (same as in training script)
-# ---------------------------------------------------------------------------
-
-class Diff2FlowAligner:
-    """Analytical alignment between diffusion and flow matching trajectories."""
-
-    def __init__(self, noise_scheduler: DDPMScheduler):
-        alphas_cumprod = noise_scheduler.alphas_cumprod
-        self.alpha = torch.sqrt(alphas_cumprod)
-        self.sigma = torch.sqrt(1.0 - alphas_cumprod)
-        self.T = len(alphas_cumprod)
-        self.ft_values = self.alpha / (self.alpha + self.sigma)
-
-    def t_fm_to_t_dm(self, t_fm: torch.Tensor) -> torch.Tensor:
-        device = t_fm.device
-        ft = self.ft_values.to(device)
-        ft_ascending = ft.flip(0)
-        idx_asc = torch.searchsorted(ft_ascending, t_fm.clamp(ft_ascending[0], ft_ascending[-1]))
-        idx_asc = idx_asc.clamp(1, len(ft_ascending) - 1)
-
-        idx_hi_asc = idx_asc
-        idx_lo_asc = idx_asc - 1
-
-        ft_lo = ft_ascending[idx_lo_asc]
-        ft_hi = ft_ascending[idx_hi_asc]
-
-        t_dm_lo_asc = (self.T - 1 - idx_lo_asc).float()
-        t_dm_hi_asc = (self.T - 1 - idx_hi_asc).float()
-
-        denom = (ft_hi - ft_lo).clamp(min=1e-8)
-        w = (t_fm - ft_lo) / denom
-        t_dm = t_dm_lo_asc + w * (t_dm_hi_asc - t_dm_lo_asc)
-        return t_dm
-
-    def get_alpha_sigma(self, t_dm: torch.Tensor) -> tuple:
-        device = t_dm.device
-        alpha = self.alpha.to(device)
-        sigma = self.sigma.to(device)
-
-        t_lo = t_dm.long().clamp(0, self.T - 2)
-        t_hi = t_lo + 1
-        w = (t_dm - t_lo.float()).clamp(0, 1)
-
-        alpha_t = alpha[t_lo] * (1 - w) + alpha[t_hi] * w
-        sigma_t = sigma[t_lo] * (1 - w) + sigma[t_hi] * w
-        return alpha_t, sigma_t
-
-    def x_fm_to_x_dm(self, x_fm, alpha_t, sigma_t):
-        scale = (alpha_t + sigma_t)
-        while scale.dim() < x_fm.dim():
-            scale = scale.unsqueeze(-1)
-        return scale * x_fm
-
-    def eps_to_velocity(self, eps_pred, x_dm, alpha_t, sigma_t):
-        a = alpha_t.clone()
-        s = sigma_t.clone()
-        while a.dim() < x_dm.dim():
-            a = a.unsqueeze(-1)
-            s = s.unsqueeze(-1)
-
-        x0_hat = (x_dm - s * eps_pred) / a.clamp(min=1e-8)
-        velocity = x0_hat - eps_pred
-        return velocity
-
-
-# ---------------------------------------------------------------------------
-# LoRA modules (needed to load LoRA checkpoints)
-# ---------------------------------------------------------------------------
-
-class LoRALinear(torch.nn.Module):
-    def __init__(self, original, rank):
-        super().__init__()
-        self.original = original
-        self.lora_down = torch.nn.Linear(original.in_features, rank, bias=False)
-        self.lora_up = torch.nn.Linear(rank, original.out_features, bias=False)
-
-    def forward(self, x):
-        return self.original(x) + self.lora_up(self.lora_down(x))
-
-
-class LoRAConv2d(torch.nn.Module):
-    def __init__(self, original, rank):
-        super().__init__()
-        self.original = original
-        self.lora_down = torch.nn.Conv2d(original.in_channels, rank, 1, bias=False)
-        self.lora_up = torch.nn.Conv2d(rank, original.out_channels, 1, bias=False)
-
-    def forward(self, x):
-        return self.original(x) + self.lora_up(self.lora_down(x))
-
-
-def apply_lora(model, rank=64):
-    """Apply LoRA to all Linear and Conv2d layers (must match training config)."""
-    import torch.nn as nn
-    replaced = 0
-    for name, module in list(model.named_modules()):
-        parts = name.split(".")
-        parent = model
-        for p in parts[:-1]:
-            parent = getattr(parent, p)
-        attr_name = parts[-1] if parts else None
-
-        if attr_name and isinstance(module, nn.Linear):
-            r = min(rank, module.in_features, module.out_features)
-            setattr(parent, attr_name, LoRALinear(module, r))
-            replaced += 1
-        elif attr_name and isinstance(module, nn.Conv2d):
-            r = min(rank, module.in_channels, module.out_channels)
-            setattr(parent, attr_name, LoRAConv2d(module, r))
-            replaced += 1
-    return replaced
+from shared.aligner import Diff2FlowAligner
+from shared.lora import apply_lora
+from shared.utils import tensor_to_pil
 
 
 # ---------------------------------------------------------------------------
@@ -180,12 +73,6 @@ def sample_euler(model, aligner, num_samples, image_size, num_steps, device, see
         x = x + dt * velocity
 
     return x.clamp(-1, 1)
-
-
-def tensor_to_pil(images):
-    images = (images / 2 + 0.5).clamp(0, 1)
-    images = images.permute(0, 2, 3, 1).cpu().numpy()
-    return [Image.fromarray((img * 255).astype("uint8")) for img in images]
 
 
 def make_grid(images, cols=None):

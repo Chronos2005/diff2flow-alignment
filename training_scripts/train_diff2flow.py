@@ -11,214 +11,24 @@ Model Alignment", arXiv:2506.02221, 2025.
 """
 
 import argparse
-import math
 import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import torch
 import torch.nn.functional as F
 from diffusers import DDPMScheduler, UNet2DModel
 from diffusers.optimization import get_cosine_schedule_with_warmup
-from PIL import Image
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
 from tqdm import tqdm
 from accelerate import Accelerator
 
+from shared.aligner import Diff2FlowAligner
+from shared.lora import apply_lora
+from shared.datasets import DATASET_DEFAULTS, get_dataset, get_data_root
+from shared.utils import make_grid, tensor_to_pil
 
-# ---------------------------------------------------------------------------
-# Diff2Flow core: trajectory alignment helpers
-# ---------------------------------------------------------------------------
-
-class Diff2FlowAligner:
-    """
-    Handles the analytical alignment between diffusion and flow matching:
-      - Timestep remapping:  t_FM <-> t_DM
-      - Interpolant rescaling: x_FM <-> x_DM
-      - Velocity derivation from epsilon prediction
-
-    Assumes a variance-preserving (VP) DDPM schedule where:
-      alpha_t = sqrt(alpha_bar_t)
-      sigma_t = sqrt(1 - alpha_bar_t)
-    """
-
-    def __init__(self, noise_scheduler: DDPMScheduler):
-        # Extract the cumulative alpha products from the DDPM scheduler
-        alphas_cumprod = noise_scheduler.alphas_cumprod  # shape: (T,)
-        T = len(alphas_cumprod)
-
-        # alpha_t and sigma_t for each discrete diffusion timestep 0..T-1
-        # In DDPM convention: x_t = alpha_t * x_0 + sigma_t * eps
-        self.alpha = torch.sqrt(alphas_cumprod)          # (T,)
-        self.sigma = torch.sqrt(1.0 - alphas_cumprod)    # (T,)
-        self.T = T  # number of discrete diffusion timesteps (typically 1000)
-
-        # Precompute f_t for each discrete timestep: f_t = alpha / (alpha + sigma)
-        # This maps t_DM -> t_FM.  Note: t_DM=0 is data, t_DM=T-1 is noise.
-        # In FM convention: t_FM=1 is data, t_FM=0 is noise.
-        # So f_t(t_DM=0) should be close to 1, f_t(t_DM=T-1) close to 0.
-        self.ft_values = self.alpha / (self.alpha + self.sigma)  # (T,)
-
-    def t_fm_to_t_dm(self, t_fm: torch.Tensor) -> torch.Tensor:
-        """
-        Inverse timestep mapping: f_t^{-1}(t_FM) -> t_DM (continuous).
-
-        For each t_FM value, find the two nearest discrete neighbors in ft_values
-        and linearly interpolate to get a continuous t_DM.
-
-        Args:
-            t_fm: tensor of FM timesteps in [0, 1]
-
-        Returns:
-            t_dm: tensor of continuous diffusion timesteps in [0, T-1]
-        """
-        device = t_fm.device
-        ft = self.ft_values.to(device)  # (T,) monotonically decreasing
-
-        # ft is decreasing (ft[0] ~ 1, ft[T-1] ~ 0), so flip for searchsorted
-        # which expects ascending order
-        ft_ascending = ft.flip(0)  # now ascending
-        # searchsorted finds insertion point in ascending array
-        idx_asc = torch.searchsorted(ft_ascending, t_fm.clamp(ft_ascending[0], ft_ascending[-1]))
-        idx_asc = idx_asc.clamp(1, len(ft_ascending) - 1)
-
-        # Convert back to original (descending) indices
-        # In ascending array, idx_asc points to the first value >= t_fm
-        # In descending array: idx_desc = T - 1 - idx_asc  (the lower neighbor)
-        # The upper neighbor in descending: idx_desc + 1 doesn't work simply.
-        # Let's just work directly:
-        # idx_asc-1 and idx_asc in ascending = (T-1-(idx_asc-1)) and (T-1-idx_asc) in descending
-        idx_hi_asc = idx_asc       # first index >= t_fm in ascending
-        idx_lo_asc = idx_asc - 1   # last index < t_fm in ascending
-
-        ft_lo = ft_ascending[idx_lo_asc]  # value just below t_fm
-        ft_hi = ft_ascending[idx_hi_asc]  # value just above t_fm
-
-        # The corresponding discrete t_DM values (in descending ft order):
-        # ascending index i corresponds to descending index T-1-i,
-        # which is the diffusion timestep itself
-        t_dm_lo_asc = (self.T - 1 - idx_lo_asc).float()  # t_DM for lower ft value
-        t_dm_hi_asc = (self.T - 1 - idx_hi_asc).float()  # t_DM for higher ft value
-
-        # But wait: in the descending array, higher ft = lower t_DM (closer to data).
-        # ft_lo < t_fm <= ft_hi  (in ascending order)
-        # ft_lo corresponds to a HIGHER t_DM (more noise), ft_hi to LOWER t_DM (less noise)
-        # So t_dm_lo_asc > t_dm_hi_asc
-
-        # Linear interpolation: find where t_fm sits between ft_lo and ft_hi
-        denom = (ft_hi - ft_lo).clamp(min=1e-8)
-        w = (t_fm - ft_lo) / denom  # 0 at ft_lo, 1 at ft_hi
-
-        # Interpolate t_DM
-        t_dm = t_dm_lo_asc + w * (t_dm_hi_asc - t_dm_lo_asc)
-        return t_dm
-
-    def get_alpha_sigma(self, t_dm: torch.Tensor) -> tuple:
-        """
-        Get interpolated alpha and sigma for continuous t_DM values.
-
-        Args:
-            t_dm: continuous diffusion timesteps in [0, T-1]
-
-        Returns:
-            (alpha, sigma) interpolated at the given t_dm values
-        """
-        device = t_dm.device
-        alpha = self.alpha.to(device)
-        sigma = self.sigma.to(device)
-
-        t_lo = t_dm.long().clamp(0, self.T - 2)
-        t_hi = t_lo + 1
-        w = (t_dm - t_lo.float()).clamp(0, 1)
-
-        alpha_t = alpha[t_lo] * (1 - w) + alpha[t_hi] * w
-        sigma_t = sigma[t_lo] * (1 - w) + sigma[t_hi] * w
-
-        return alpha_t, sigma_t
-
-    def x_fm_to_x_dm(self, x_fm: torch.Tensor, alpha_t: torch.Tensor, sigma_t: torch.Tensor) -> torch.Tensor:
-        """
-        f_x^{-1}: transform FM interpolant to DM interpolant.
-        x_DM = (alpha + sigma) * x_FM       (Eq. 13)
-
-        Args:
-            x_fm: FM interpolant
-            alpha_t, sigma_t: schedule values at the corresponding t_DM
-        """
-        scale = (alpha_t + sigma_t)
-        # Broadcast: alpha_t, sigma_t are (B,), x_fm is (B, C, H, W)
-        while scale.dim() < x_fm.dim():
-            scale = scale.unsqueeze(-1)
-        return scale * x_fm
-
-    def eps_to_velocity(
-        self,
-        eps_pred: torch.Tensor,
-        x_dm: torch.Tensor,
-        alpha_t: torch.Tensor,
-        sigma_t: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Derive FM velocity from epsilon prediction.
-
-        From epsilon parameterization:
-            x_DM_0_hat = (x_DM - sigma_t * eps_pred) / alpha_t
-            x_DM_T_hat = (x_DM - alpha_t * x_DM_0_hat) / sigma_t
-                       = eps_pred  (by construction)
-
-        Then velocity (Eq. 16 adapted for eps-param):
-            v_hat = x_DM_0_hat - x_DM_T_hat
-
-        For epsilon parameterization, using the diffusion interpolant:
-            x_DM = alpha_t * x0 + sigma_t * eps
-        We can recover:
-            x0_hat = (x_DM - sigma_t * eps_pred) / alpha_t
-            eps_hat = eps_pred
-        And the FM velocity is:
-            v = x1 - x0 = x0_hat - eps_hat  (since x_FM_1 = data = x_DM_0, x_FM_0 = noise = x_DM_T)
-        """
-        # Broadcast schedule values
-        a = alpha_t.clone()
-        s = sigma_t.clone()
-        while a.dim() < x_dm.dim():
-            a = a.unsqueeze(-1)
-            s = s.unsqueeze(-1)
-
-        # Recover data and noise estimates
-        x0_hat = (x_dm - s * eps_pred) / a.clamp(min=1e-8)
-        eps_hat = eps_pred  # the noise estimate IS the eps prediction
-
-        # FM velocity: data - noise (in FM convention x1=data, x0=noise)
-        velocity = x0_hat - eps_hat
-        return velocity
-
-
-# ---------------------------------------------------------------------------
-# Dataset loading (reused from the DDPM trainer)
-# ---------------------------------------------------------------------------
-
-DATASET_DEFAULTS = {
-    "cifar10": {"image_size": 32, "train_batch_size": 128, "num_epochs": 50, "output_dir": "diff2flow_cifar10"},
-    "celeba":  {"image_size": 128, "train_batch_size": 128, "num_epochs": 100, "output_dir": "diff2flow_celeba"},
-}
-
-
-def get_dataset(name, data_root, image_size):
-    if name == "cifar10":
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
-        ])
-        return datasets.CIFAR10(root=data_root, train=True, download=False, transform=transform)
-    elif name == "celeba":
-        transform = transforms.Compose([
-            transforms.CenterCrop(178),
-            transforms.Resize(image_size),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-        ])
-        return datasets.CelebA(root=data_root, split="train", target_type="attr", download=False, transform=transform)
+OUTPUT_DIRS = {"cifar10": "diff2flow_cifar10", "celeba": "diff2flow_celeba"}
 
 
 # ---------------------------------------------------------------------------
@@ -263,21 +73,6 @@ def sample_euler(model, aligner, num_samples, image_size, num_steps, device):
     return x
 
 
-def tensor_to_pil(images):
-    """Convert a batch of [-1,1] tensors to PIL images."""
-    images = (images / 2 + 0.5).clamp(0, 1)
-    images = images.permute(0, 2, 3, 1).cpu().numpy()
-    return [Image.fromarray((img * 255).astype("uint8")) for img in images]
-
-
-def make_grid(images, rows, cols):
-    w, h = images[0].size
-    grid = Image.new("RGB", size=(cols * w, rows * h))
-    for i, image in enumerate(images):
-        grid.paste(image, box=(i % cols * w, i // cols * h))
-    return grid
-
-
 # ---------------------------------------------------------------------------
 # Main training loop
 # ---------------------------------------------------------------------------
@@ -311,70 +106,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def apply_lora(model, rank=64):
-    """
-    Apply a simple LoRA-style low-rank adaptation to all linear and conv layers.
-    Freezes the original weights and adds trainable low-rank deltas.
-
-    This is a minimal implementation. For production use, consider using
-    the peft library or diffusers' built-in LoRA support.
-    """
-    import torch.nn as nn
-
-    class LoRALinear(nn.Module):
-        def __init__(self, original: nn.Linear, rank: int):
-            super().__init__()
-            self.original = original
-            self.original.weight.requires_grad_(False)
-            if self.original.bias is not None:
-                self.original.bias.requires_grad_(False)
-
-            self.lora_down = nn.Linear(original.in_features, rank, bias=False)
-            self.lora_up = nn.Linear(rank, original.out_features, bias=False)
-            nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
-            nn.init.zeros_(self.lora_up.weight)
-
-        def forward(self, x):
-            return self.original(x) + self.lora_up(self.lora_down(x))
-
-    class LoRAConv2d(nn.Module):
-        def __init__(self, original: nn.Conv2d, rank: int):
-            super().__init__()
-            self.original = original
-            self.original.weight.requires_grad_(False)
-            if self.original.bias is not None:
-                self.original.bias.requires_grad_(False)
-
-            # Low-rank factorization via 1x1 convolutions
-            self.lora_down = nn.Conv2d(original.in_channels, rank, 1, bias=False)
-            self.lora_up = nn.Conv2d(rank, original.out_channels, 1, bias=False)
-            nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
-            nn.init.zeros_(self.lora_up.weight)
-
-        def forward(self, x):
-            return self.original(x) + self.lora_up(self.lora_down(x))
-
-    replaced = 0
-    for name, module in list(model.named_modules()):
-        # Navigate to parent module
-        parts = name.split(".")
-        parent = model
-        for p in parts[:-1]:
-            parent = getattr(parent, p)
-        attr_name = parts[-1] if parts else None
-
-        if attr_name and isinstance(module, nn.Linear):
-            r = min(rank, module.in_features, module.out_features)
-            setattr(parent, attr_name, LoRALinear(module, r))
-            replaced += 1
-        elif attr_name and isinstance(module, nn.Conv2d):
-            r = min(rank, module.in_channels, module.out_channels)
-            setattr(parent, attr_name, LoRAConv2d(module, r))
-            replaced += 1
-
-    return replaced
-
-
 def main():
     args = parse_args()
 
@@ -384,13 +115,10 @@ def main():
         if getattr(args, key) is None:
             setattr(args, key, val)
 
-    if args.data_root is None:
-        if args.dataset == "cifar10":
-            from dataset_download_scripts.cifar import CIFAR10_ROOT
-            args.data_root = CIFAR10_ROOT
-        elif args.dataset == "celeba":
-            from dataset_download_scripts.celebA import CELEBA_ROOT
-            args.data_root = CELEBA_ROOT
+    if args.output_dir is None:
+        args.output_dir = OUTPUT_DIRS[args.dataset]
+
+    args.data_root = get_data_root(args.dataset, args.data_root)
 
     accelerator = Accelerator()
     device = accelerator.device
@@ -483,7 +211,6 @@ def main():
             bs = images.shape[0]
 
             # --- Step 1: Sample FM timesteps and build FM interpolant ---
-            # t_FM ~ U(0, 1), x0 ~ N(0,I) (noise), x1 = data
             t_fm = torch.rand(bs, device=images.device)
             noise = torch.randn_like(images)  # x_FM_0
 
