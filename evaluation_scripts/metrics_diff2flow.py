@@ -60,7 +60,7 @@ def parse_args():
 
     # Model
     parser.add_argument("--checkpoint_path", type=str, required=True,
-                        help="Path to Diff2Flow checkpoint (.pt file)")
+                        help="Path to Diff2Flow checkpoint (.safetensors file)")
     parser.add_argument("--pretrained_model_path", type=str, default=None,
                         help="Path to original DDPM model (for architecture)")
     parser.add_argument("--use_lora", action="store_true")
@@ -284,27 +284,24 @@ def main():
     # Load model
     # -----------------------------------------------------------------------
     print("Loading model...")
-    checkpoint = torch.load(args.checkpoint_path, map_location="cpu", weights_only=False)
-    ckpt_args = checkpoint.get("args", {})
+    from safetensors.torch import load_file as load_safetensors
 
-    pretrained_path = args.pretrained_model_path or ckpt_args.get("pretrained_model_path")
+    pretrained_path = args.pretrained_model_path
     if pretrained_path is None:
         raise ValueError("Provide --pretrained_model_path")
 
     model = UNet2DModel.from_pretrained(pretrained_path)
 
-    use_lora = args.use_lora or ckpt_args.get("use_lora", False)
-    lora_rank = args.lora_rank or ckpt_args.get("lora_rank", 64)
-    if use_lora:
-        print(f"Applying LoRA (rank={lora_rank})")
-        apply_lora(model, rank=lora_rank)
+    if args.use_lora:
+        print(f"Applying LoRA (rank={args.lora_rank})")
+        apply_lora(model, rank=args.lora_rank)
 
-    model.load_state_dict(checkpoint["model_state_dict"])
+    state_dict = load_safetensors(args.checkpoint_path, device="cpu")
+    model.load_state_dict(state_dict)
     model = model.to(device)
     model.eval()
 
-    epoch = checkpoint.get("epoch", "?")
-    print(f"Loaded checkpoint: epoch={epoch}")
+    print(f"Loaded safetensors checkpoint: {args.checkpoint_path}")
 
     # -----------------------------------------------------------------------
     # Build aligner
