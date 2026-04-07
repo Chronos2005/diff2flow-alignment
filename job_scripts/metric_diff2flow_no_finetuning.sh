@@ -3,11 +3,11 @@
 #SBATCH --account=ecsstudents
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=12
 #SBATCH --time=24:00:00
-#SBATCH --output=logs/phase1_%j.out
-#SBATCH --error=logs/phase1_%j.err
+#SBATCH --output=../logs/phase1_%j.out
+#SBATCH --error=l../logs/phase1_%j.err
  
 module load conda
  
@@ -43,4 +43,10 @@ EOF
 echo "===== END CHECK ====="
 
 # --- RUN YOUR TRAINING ---
-python -u ../diff2flow.py --mode freeze_encoder
+python ../evaluation_scripts/metrics_diff2flow.py \
+  --checkpoint_path /scratch/ram1g23/Models/Cifar-10/ddpm_cifar10/final_model/diffusion_pytorch_model.safetensors\
+  --pretrained_model_path /scratch/ram1g23/Models/Cifar-10/ddpm_cifar10/final_model \
+  --dataset cifar10 \
+  --num_samples 10000 \
+  --step_counts 2 4 10 25 50 100\
+  --output_dir ../results/diff2flow_cifar10/metrics_no_finetuning

@@ -3,7 +3,7 @@
 #SBATCH --account=ecsstudents
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=12
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/phase1_%j.out
@@ -42,9 +42,11 @@ EOF
 
 echo "===== END CHECK ====="
 
-# --- TRAIN DDPM ---
-cd /iridisfs/home/ram1g23/Projects/diff2flow-alignment
-python evaluation_scripts/metrics.py --model ddpm \
-  --ddpm-dir /scratch/ram1g23/Models/Cifar-10/progressive_distillation_cifar10/stage_6_steps_7/model \
-  --num-samples 100 \
-  --batch-size 256
+# --- RUN YOUR TRAINING ---
+python -u ../training_scripts/train_diff2flow.py \
+  --pretrained_model_path /scratch/ram1g23/Models/Cifar-10/ddpm_cifar10/final_model \
+  --dataset cifar10 \
+  --num_epochs 20 \
+  --save_images_every 2 \
+  --save_model_every 5 \
+  --num_inference_steps 50
