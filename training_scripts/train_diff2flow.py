@@ -18,8 +18,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import torch
 import torch.nn.functional as F
 from diffusers import DDPMScheduler, UNet2DModel
-from diffusers.optimization import get_cosine_schedule_with_warmup
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 from accelerate import Accelerator
 
@@ -27,6 +25,7 @@ from shared.aligner import Diff2FlowAligner
 from shared.args import add_dataset_args, add_training_args, add_lora_args, add_diffusion_args
 from shared.lora import apply_lora
 from shared.datasets import DATASET_DEFAULTS, get_dataset, get_data_root
+from shared.training import make_dataloader, make_optimizer_and_scheduler
 from shared.utils import make_grid, tensor_to_pil
 
 OUTPUT_DIRS = {"cifar10": "diff2flow_cifar10", "celeba": "diff2flow_celeba"}
@@ -155,14 +154,7 @@ def main():
     # 4) Dataset & dataloader
     # -----------------------------------------------------------------------
     dataset = get_dataset(args.dataset, args.data_root, args.image_size)
-    dataloader = DataLoader(
-        dataset,
-        batch_size=args.train_batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        drop_last=True,
-    )
+    dataloader = make_dataloader(dataset, args.train_batch_size, args.num_workers)
 
     if accelerator.is_main_process:
         print(f"Dataset: {args.dataset} ({len(dataset):,} images)")
@@ -174,11 +166,9 @@ def main():
     # 5) Optimizer & scheduler
     # -----------------------------------------------------------------------
     trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate)
-    lr_scheduler = get_cosine_schedule_with_warmup(
-        optimizer=optimizer,
-        num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=len(dataloader) * args.num_epochs,
+    optimizer, lr_scheduler = make_optimizer_and_scheduler(
+        trainable_params, args.learning_rate,
+        args.num_warmup_steps, len(dataloader) * args.num_epochs,
     )
 
     model, optimizer, dataloader, lr_scheduler = accelerator.prepare(

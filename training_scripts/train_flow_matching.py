@@ -4,15 +4,14 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import argparse
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 from diffusers import UNet2DModel
-from diffusers.optimization import get_cosine_schedule_with_warmup
 from accelerate import Accelerator
 from tqdm import tqdm
 import numpy as np
 
 from shared.args import add_dataset_args, add_training_args
 from shared.datasets import DATASET_DEFAULTS, CIFAR10_ROOT, CELEBA_ROOT, get_dataset, get_data_root
+from shared.training import build_unet, make_dataloader, make_optimizer_and_scheduler
 from shared.utils import make_grid, tensor_to_pil
 
 # --- Dataset configs (extends shared defaults with FM-specific fields) ---
@@ -113,51 +112,19 @@ def main():
 
     # Data
     dataset = get_dataset(args.dataset, data_root, image_size)
-    dataloader = DataLoader(
-        dataset,
-        batch_size=per_gpu_batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        drop_last=True,
-    )
+    dataloader = make_dataloader(dataset, per_gpu_batch_size, args.num_workers)
     accelerator.print(f"Dataset size: {len(dataset):,} images")
 
     # Model
-    model = UNet2DModel(
-        sample_size=image_size,
-        in_channels=3,
-        out_channels=3,
-        layers_per_block=2,
-        block_out_channels=fm_config["block_out_channels"],
-        down_block_types=(
-            "DownBlock2D",
-            "DownBlock2D",
-            "DownBlock2D",
-            "DownBlock2D",
-            "AttnDownBlock2D",
-            "DownBlock2D",
-        ),
-        up_block_types=(
-            "UpBlock2D",
-            "AttnUpBlock2D",
-            "UpBlock2D",
-            "UpBlock2D",
-            "UpBlock2D",
-            "UpBlock2D",
-        ),
-    )
+    model = build_unet(image_size)
 
     num_params = sum(p.numel() for p in model.parameters()) / 1e6
     accelerator.print(f"Model parameters: {num_params:.1f}M")
 
     flow_matching = FlowMatching(sigma_min=args.sigma_min)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
-    lr_scheduler = get_cosine_schedule_with_warmup(
-        optimizer=optimizer,
-        num_warmup_steps=500,
-        num_training_steps=len(dataloader) * num_epochs,
+    optimizer, lr_scheduler = make_optimizer_and_scheduler(
+        model.parameters(), args.learning_rate, 500, len(dataloader) * num_epochs,
     )
 
     model, optimizer, dataloader, lr_scheduler = accelerator.prepare(

@@ -6,13 +6,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import torch
 import torch.nn.functional as F
 from diffusers import DDPMPipeline, DDPMScheduler, UNet2DModel
-from diffusers.optimization import get_cosine_schedule_with_warmup
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 from accelerate import Accelerator
 
 from shared.args import add_dataset_args, add_training_args, add_diffusion_args
 from shared.datasets import DATASET_DEFAULTS, get_dataset, get_data_root
+from shared.training import build_unet, make_dataloader, make_optimizer_and_scheduler
 from shared.utils import make_grid
 
 OUTPUT_DIRS = {"cifar10": "ddpm_cifar10", "celeba": "ddpm_celeba"}
@@ -35,32 +34,6 @@ def parse_args():
     parser.add_argument("--num_inference_steps", type=int, default=1000)
 
     return parser.parse_args()
-
-
-def build_model(image_size):
-    return UNet2DModel(
-        sample_size=image_size,
-        in_channels=3,
-        out_channels=3,
-        layers_per_block=2,
-        block_out_channels=(128, 128, 256, 256, 512, 512),
-        down_block_types=(
-            "DownBlock2D",
-            "DownBlock2D",
-            "DownBlock2D",
-            "DownBlock2D",
-            "AttnDownBlock2D",
-            "DownBlock2D",
-        ),
-        up_block_types=(
-            "UpBlock2D",
-            "AttnUpBlock2D",
-            "UpBlock2D",
-            "UpBlock2D",
-            "UpBlock2D",
-            "UpBlock2D",
-        ),
-    )
 
 
 def main():
@@ -88,30 +61,21 @@ def main():
         print(f"Output dir:   {args.output_dir}")
 
     dataset = get_dataset(args.dataset, args.data_root, args.image_size)
-    dataloader = DataLoader(
-        dataset,
-        batch_size=args.train_batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        drop_last=True,
-    )
+    dataloader = make_dataloader(dataset, args.train_batch_size, args.num_workers)
 
     if accelerator.is_main_process:
         print(f"Dataset size: {len(dataset):,} images")
 
-    model = build_model(args.image_size)
+    model = build_unet(args.image_size)
 
     if accelerator.is_main_process:
         num_params = sum(p.numel() for p in model.parameters()) / 1e6
         print(f"Model parameters: {num_params:.1f}M")
 
     noise_scheduler = DDPMScheduler(num_train_timesteps=args.num_train_timesteps)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
-    lr_scheduler = get_cosine_schedule_with_warmup(
-        optimizer=optimizer,
-        num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=len(dataloader) * args.num_epochs,
+    optimizer, lr_scheduler = make_optimizer_and_scheduler(
+        model.parameters(), args.learning_rate,
+        args.num_warmup_steps, len(dataloader) * args.num_epochs,
     )
 
     model, optimizer, dataloader, lr_scheduler = accelerator.prepare(

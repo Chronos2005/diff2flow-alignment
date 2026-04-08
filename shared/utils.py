@@ -5,6 +5,20 @@ import torch
 from PIL import Image
 
 
+def batch_generate(sample_fn, num_images, batch_size, seed):
+    """Generate `num_images` samples in batches via `sample_fn(num_samples, seed) -> Tensor`."""
+    all_samples = []
+    remaining = num_images
+    batch_idx = 0
+    while remaining > 0:
+        bs = min(batch_size, remaining)
+        batch_seed = seed + batch_idx if seed is not None else None
+        all_samples.append(sample_fn(bs, batch_seed))
+        remaining -= bs
+        batch_idx += 1
+    return torch.cat(all_samples, dim=0)[:num_images]
+
+
 def make_grid(images, rows, cols):
     """Create a PIL grid from a list of PIL images."""
     w, h = images[0].size
