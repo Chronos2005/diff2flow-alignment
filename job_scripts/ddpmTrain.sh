@@ -43,4 +43,4 @@ EOF
 echo "===== END CHECK ====="
 
 # --- RUN YOUR TRAINING ---
-python -u ../training_scripts/train_ddpm.py --dataset celeba
+accelerate launch --num_processes=1 ../training_scripts/train_ddpm.py --dataset celeba

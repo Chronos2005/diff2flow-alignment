@@ -46,5 +46,5 @@ echo "===== END CHECK ====="
 
 # --- TRAIN FLOW MATCHING ---
 echo "===== STARTING FLOW MATCHING TRAINING ====="
-python -u celebAFlow.py
+accelerate launch --num_processes=1 celebAFlow.py
 echo "===== FLOW MATCHING TRAINING COMPLETE ====="

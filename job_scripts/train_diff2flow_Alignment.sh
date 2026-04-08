@@ -43,7 +43,7 @@ EOF
 echo "===== END CHECK ====="
 
 # --- RUN YOUR TRAINING ---
-python -u ../training_scripts/train_diff2flow.py \
+accelerate launch --num_processes=2 ../training_scripts/train_diff2flow.py \
   --pretrained_model_path /scratch/ram1g23/Models/Cifar-10/ddpm_cifar10/final_model \
   --dataset cifar10 \
   --num_epochs 20 \
