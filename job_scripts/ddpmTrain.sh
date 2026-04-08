@@ -3,7 +3,7 @@
 #SBATCH --account=ecsstudents
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=12
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/phase1_%j.out
@@ -43,4 +43,4 @@ EOF
 echo "===== END CHECK ====="
 
 # --- RUN YOUR TRAINING ---
-accelerate launch --num_processes=1 ../training_scripts/train_ddpm.py --dataset celeba
+accelerate launch --num_processes=2 ../training_scripts/train_ddpm.py --dataset celeba

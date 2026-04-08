@@ -3,7 +3,7 @@
 #SBATCH --account=ecsstudents
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=12
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/phase1_%j.out
@@ -46,5 +46,5 @@ echo "===== END CHECK ====="
 
 # --- TRAIN FLOW MATCHING ---
 echo "===== STARTING FLOW MATCHING TRAINING ====="
-accelerate launch --num_processes=1 celebAFlow.py
+accelerate launch --num_processes=2 celebAFlow.py
 echo "===== FLOW MATCHING TRAINING COMPLETE ====="
