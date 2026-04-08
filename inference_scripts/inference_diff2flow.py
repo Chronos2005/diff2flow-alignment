@@ -7,19 +7,19 @@ Euler integration on the flow matching ODE. No training — just sampling.
 Usage:
     # Basic usage
     python diff2flow_inference.py \
-        --checkpoint_path diff2flow_cifar10/final_model/diff2flow_final.pt \
+        --checkpoint_path diff2flow_cifar10/final_model \
         --num_images 16 \
         --num_steps 50
 
     # Fewer steps (faster, slightly lower quality)
     python diff2flow_inference.py \
-        --checkpoint_path diff2flow_cifar10/final_model/diff2flow_final.pt \
+        --checkpoint_path diff2flow_cifar10/final_model \
         --num_images 64 \
         --num_steps 10
 
     # Compare different step counts
     python diff2flow_inference.py \
-        --checkpoint_path diff2flow_cifar10/final_model/diff2flow_final.pt \
+        --checkpoint_path diff2flow_cifar10/final_model \
         --num_images 16 \
         --num_steps 2 4 10 25 50 100 \
         --output_dir step_comparison
@@ -94,10 +94,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Diff2Flow Inference")
 
     parser.add_argument("--checkpoint_path", type=str, required=True,
-                        help="Path to Diff2Flow checkpoint (.pt file)")
-    parser.add_argument("--pretrained_model_path", type=str, default=None,
-                        help="Path to original DDPM model (for architecture). "
-                             "If not provided, will try to infer from checkpoint args.")
+                        help="Path to Diff2Flow checkpoint directory (saved with save_pretrained)")
     parser.add_argument("--num_images", type=int, default=16,
                         help="Number of images to generate")
     parser.add_argument("--num_steps", type=int, nargs="+", default=[50],
@@ -121,39 +118,32 @@ def parse_args():
 
 
 def load_model(args, device):
-    """Load the model architecture and Diff2Flow checkpoint weights."""
+    """Load the Diff2Flow checkpoint with from_pretrained."""
 
-    checkpoint = torch.load(args.checkpoint_path, map_location="cpu", weights_only=False)
+    ckpt_dir = args.checkpoint_path
 
-    # Try to get the pretrained model path from checkpoint metadata
-    ckpt_args = checkpoint.get("args", {})
-    pretrained_path = args.pretrained_model_path or ckpt_args.get("pretrained_model_path")
+    # Load training metadata (args, epoch, global_step)
+    state_path = os.path.join(ckpt_dir, "training_state.pt")
+    training_state = {}
+    if os.path.exists(state_path):
+        training_state = torch.load(state_path, map_location="cpu", weights_only=False)
+    ckpt_args = training_state.get("args", {})
 
-    if pretrained_path is None:
-        raise ValueError(
-            "Cannot determine the original DDPM model path. "
-            "Please provide --pretrained_model_path."
-        )
-
-    print(f"Loading architecture from: {pretrained_path}")
-    model = UNet2DModel.from_pretrained(pretrained_path)
-
-    # Apply LoRA if the checkpoint was trained with it
+    # Apply LoRA before loading weights if the checkpoint was trained with it
     use_lora = args.use_lora or ckpt_args.get("use_lora", False)
     lora_rank = args.lora_rank or ckpt_args.get("lora_rank", 64)
+
+    model = UNet2DModel.from_pretrained(ckpt_dir)
 
     if use_lora:
         print(f"Applying LoRA (rank={lora_rank}) to match training config")
         apply_lora(model, rank=lora_rank)
 
-    # Load the finetuned weights
-    model.load_state_dict(checkpoint["model_state_dict"])
-
     model = model.to(device)
     model.eval()
 
-    epoch = checkpoint.get("epoch", "?")
-    step = checkpoint.get("global_step", "?")
+    epoch = training_state.get("epoch", "?")
+    step = training_state.get("global_step", "?")
     print(f"Loaded checkpoint: epoch={epoch}, global_step={step}")
 
     return model

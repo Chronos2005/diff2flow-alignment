@@ -161,12 +161,16 @@ def main():
     start_epoch = 0
     if args.resume:
         accelerator.print(f"Resuming from checkpoint: {args.resume}")
-        checkpoint = torch.load(args.resume, map_location=accelerator.device)
-        accelerator.unwrap_model(model).load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        if "lr_scheduler_state_dict" in checkpoint:
-            lr_scheduler.load_state_dict(checkpoint["lr_scheduler_state_dict"])
-        start_epoch = checkpoint["epoch"]
+        resume_dir = args.resume
+        resumed = UNet2DModel.from_pretrained(resume_dir)
+        accelerator.unwrap_model(model).load_state_dict(resumed.state_dict())
+        state_path = os.path.join(resume_dir, "training_state.pt")
+        if os.path.exists(state_path):
+            training_state = torch.load(state_path, map_location=accelerator.device)
+            optimizer.load_state_dict(training_state["optimizer_state_dict"])
+            if "lr_scheduler_state_dict" in training_state:
+                lr_scheduler.load_state_dict(training_state["lr_scheduler_state_dict"])
+            start_epoch = training_state["epoch"]
         accelerator.print(f"Resumed at epoch {start_epoch}")
 
     # Training loop
@@ -231,13 +235,13 @@ def main():
             checkpoint_dir = f"{output_dir}/checkpoint_epoch_{epoch+1}"
             os.makedirs(checkpoint_dir, exist_ok=True)
             unwrapped_model = accelerator.unwrap_model(model)
+            unwrapped_model.save_pretrained(checkpoint_dir)
             torch.save({
                 "epoch": epoch + 1,
-                "model_state_dict": unwrapped_model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "lr_scheduler_state_dict": lr_scheduler.state_dict(),
                 "loss": avg_loss,
-            }, f"{checkpoint_dir}/model.pt")
+            }, f"{checkpoint_dir}/training_state.pt")
             accelerator.print(f"Saved checkpoint → {checkpoint_dir}")
 
         accelerator.wait_for_everyone()
@@ -247,11 +251,7 @@ def main():
         final_dir = f"{output_dir}/final_model"
         os.makedirs(final_dir, exist_ok=True)
         unwrapped_model = accelerator.unwrap_model(model)
-        torch.save({
-            "model_state_dict": unwrapped_model.state_dict(),
-            "dataset": args.dataset,
-            "image_size": image_size,
-        }, f"{final_dir}/model.pt")
+        unwrapped_model.save_pretrained(final_dir)
         accelerator.print("Training complete!")
 
 

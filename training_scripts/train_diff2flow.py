@@ -278,12 +278,12 @@ def main():
             unwrapped = accelerator.unwrap_model(model)
             ckpt_dir = f"{args.output_dir}/checkpoint_epoch_{epoch+1}"
             os.makedirs(ckpt_dir, exist_ok=True)
+            unwrapped.save_pretrained(ckpt_dir)
             torch.save({
-                "model_state_dict": unwrapped.state_dict(),
                 "epoch": epoch + 1,
                 "global_step": global_step,
                 "args": vars(args),
-            }, os.path.join(ckpt_dir, "diff2flow_checkpoint.pt"))
+            }, os.path.join(ckpt_dir, "training_state.pt"))
             print(f"Saved checkpoint -> {ckpt_dir}")
 
     # --- Save final model ---
@@ -292,12 +292,12 @@ def main():
         unwrapped = accelerator.unwrap_model(model)
         final_dir = f"{args.output_dir}/final_model"
         os.makedirs(final_dir, exist_ok=True)
+        unwrapped.save_pretrained(final_dir)
         torch.save({
-            "model_state_dict": unwrapped.state_dict(),
             "epoch": args.num_epochs,
             "global_step": global_step,
             "args": vars(args),
-        }, os.path.join(final_dir, "diff2flow_final.pt"))
+        }, os.path.join(final_dir, "training_state.pt"))
         print(f"Training complete! Final model saved to {final_dir}")
 
 
