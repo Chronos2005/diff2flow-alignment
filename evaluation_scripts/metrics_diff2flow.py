@@ -8,7 +8,7 @@ Generates a batch of samples, saves them, then computes FID against
 real data (CIFAR-10 train set or a folder of real images).
 
 Requirements:
-    pip install torch-fidelity   (or)   pip install clean-fid
+    pip install clean-fid
 
 Usage:
     # Evaluate at multiple step counts
@@ -44,7 +44,7 @@ from tqdm import tqdm
 
 from shared.aligner import Diff2FlowAligner
 from shared.lora import apply_lora
-from shared.utils import tensor_to_pil, make_grid
+from shared.utils import tensor_to_pil
 
 # Import sampling function from the inference script
 from inference_scripts.inference_diff2flow import sample_euler
@@ -80,10 +80,6 @@ def parse_args():
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--keep_samples", action="store_true",
                         help="Keep generated sample folders after FID computation")
-    parser.add_argument("--fid_backend", type=str, default="auto",
-                        choices=["auto", "torch_fidelity", "clean_fid"],
-                        help="Which library to use for FID computation")
-
     return parser.parse_args()
 
 
@@ -146,13 +142,12 @@ def generate_and_save_samples(model, aligner, num_samples, image_size, num_steps
                                batch_size, device, seed, output_dir):
     """
     Generate samples and save them as individual PNGs.
-    Returns (sample_dir, total_time, total_nfe).
+    Returns (sample_dir, total_time).
     """
     sample_dir = os.path.join(output_dir, f"generated_steps_{num_steps}")
     os.makedirs(sample_dir, exist_ok=True)
 
     total_time = 0.0
-    total_nfe = 0
     num_generated = 0
 
     pbar = tqdm(total=num_samples, desc=f"Generating (steps={num_steps})")
@@ -178,7 +173,6 @@ def generate_and_save_samples(model, aligner, num_samples, image_size, num_steps
         t_end = time.time()
 
         total_time += (t_end - t_start)
-        total_nfe += bs * num_steps
 
         pil_images = tensor_to_pil(samples)
         for i, img in enumerate(pil_images):
@@ -189,52 +183,17 @@ def generate_and_save_samples(model, aligner, num_samples, image_size, num_steps
         pbar.update(bs)
 
     pbar.close()
-    return sample_dir, total_time, total_nfe
+    return sample_dir, total_time
 
 
 # ---------------------------------------------------------------------------
 # FID computation
 # ---------------------------------------------------------------------------
 
-def compute_fid_torch_fidelity(real_dir, fake_dir):
-    import torch_fidelity
-    metrics = torch_fidelity.calculate_metrics(
-        input1=fake_dir,
-        input2=real_dir,
-        cuda=torch.cuda.is_available(),
-        fid=True,
-        verbose=False,
-    )
-    return metrics["frechet_inception_distance"]
-
-
-def compute_fid_clean_fid(real_dir, fake_dir):
+def compute_fid(real_dir, fake_dir):
     from cleanfid import fid
+    print("Computing FID using clean-fid...")
     return fid.compute_fid(real_dir, fake_dir)
-
-
-def compute_fid(real_dir, fake_dir, backend="auto"):
-    if backend == "auto":
-        try:
-            import torch_fidelity
-            backend = "torch_fidelity"
-        except ImportError:
-            try:
-                import cleanfid
-                backend = "clean_fid"
-            except ImportError:
-                raise ImportError(
-                    "No FID library found. Install one:\n"
-                    "  pip install torch-fidelity\n"
-                    "  pip install clean-fid"
-                )
-
-    print(f"Computing FID using {backend}...")
-
-    if backend == "torch_fidelity":
-        return compute_fid_torch_fidelity(real_dir, fake_dir)
-    elif backend == "clean_fid":
-        return compute_fid_clean_fid(real_dir, fake_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +247,7 @@ def main():
         print(f"Evaluating: {num_steps} Euler steps (NFE per sample = {num_steps})")
         print(f"{'='*60}")
 
-        sample_dir, total_time, total_nfe = generate_and_save_samples(
+        sample_dir, total_time, _ = generate_and_save_samples(
             model, aligner,
             num_samples=args.num_samples,
             image_size=args.image_size,
