@@ -22,7 +22,7 @@ from tqdm import tqdm
 from accelerate import Accelerator
 
 from shared.aligner import Diff2FlowAligner
-from shared.args import add_dataset_args, add_training_args, add_lora_args, add_diffusion_args
+from shared.args import add_dataset_args, add_training_args, add_lora_args, add_diffusion_args, add_alignment_args
 from shared.lora import apply_lora
 from shared.datasets import DATASET_DEFAULTS, get_dataset, get_data_root
 from shared.training import make_dataloader, make_optimizer_and_scheduler
@@ -87,6 +87,7 @@ def parse_args():
     add_training_args(parser, learning_rate_default=1e-5)
     add_lora_args(parser)
     add_diffusion_args(parser)
+    add_alignment_args(parser)
 
     parser.add_argument("--output_dir", type=str, default=None)
     parser.add_argument("--image_size", type=int, default=None)
@@ -132,13 +133,18 @@ def main():
     # -----------------------------------------------------------------------
     # 2) Build the Diff2Flow aligner
     # -----------------------------------------------------------------------
-    aligner = Diff2FlowAligner(noise_scheduler)
+    aligner = Diff2FlowAligner(
+        noise_scheduler,
+        use_timestep_rescaling=not args.no_timestep_rescaling,
+        use_interpolant_rescaling=not args.no_interpolant_rescaling,
+        use_velocity_translation=not args.no_velocity_translation,
+    )
 
     # -----------------------------------------------------------------------
     # 3) Optionally apply LoRA
     # -----------------------------------------------------------------------
     if args.use_lora:
-        num_replaced = apply_lora(model, rank=args.lora_rank)
+        num_replaced = apply_lora(model, rank=args.lora_rank, placement=args.lora_placement)
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
         total = sum(p.numel() for p in model.parameters())
         if accelerator.is_main_process:

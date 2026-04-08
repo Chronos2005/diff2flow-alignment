@@ -17,7 +17,13 @@ from diffusers import DDPMScheduler
 
 class Diff2FlowAligner:
 
-    def __init__(self, noise_scheduler: DDPMScheduler):
+    def __init__(
+        self,
+        noise_scheduler: DDPMScheduler,
+        use_timestep_rescaling: bool = True,
+        use_interpolant_rescaling: bool = True,
+        use_velocity_translation: bool = True,
+    ):
         alphas_cumprod = noise_scheduler.alphas_cumprod
         T = len(alphas_cumprod)
 
@@ -26,13 +32,23 @@ class Diff2FlowAligner:
         self.T = T
         self.ft_values = self.alpha / (self.alpha + self.sigma)
 
+        self.use_timestep_rescaling = use_timestep_rescaling
+        self.use_interpolant_rescaling = use_interpolant_rescaling
+        self.use_velocity_translation = use_velocity_translation
+
     def t_fm_to_t_dm(self, t_fm: torch.Tensor) -> torch.Tensor:
         """
         Inverse timestep mapping: f_t^{-1}(t_FM) -> t_DM (continuous).
 
         For each t_FM value, find the two nearest discrete neighbors in ft_values
         and linearly interpolate to get a continuous t_DM.
+
+        When use_timestep_rescaling=False, maps t_FM linearly to [0, T-1]
+        without correcting for the DDPM schedule.
         """
+        if not self.use_timestep_rescaling:
+            return (t_fm * (self.T - 1)).clamp(0, self.T - 1)
+
         device = t_fm.device
         ft = self.ft_values.to(device)
 
@@ -74,7 +90,12 @@ class Diff2FlowAligner:
         """
         f_x^{-1}: transform FM interpolant to DM interpolant.
         x_DM = (alpha + sigma) * x_FM       (Eq. 13)
+
+        When use_interpolant_rescaling=False, returns x_FM unchanged (scale=1).
         """
+        if not self.use_interpolant_rescaling:
+            return x_fm
+
         scale = (alpha_t + sigma_t)
         while scale.dim() < x_fm.dim():
             scale = scale.unsqueeze(-1)
@@ -95,7 +116,13 @@ class Diff2FlowAligner:
             eps_hat = eps_pred
         FM velocity:
             v = x0_hat - eps_hat
+
+        When use_velocity_translation=False, returns eps_pred directly as velocity
+        (naive fallback — treats the model's epsilon output as a velocity).
         """
+        if not self.use_velocity_translation:
+            return eps_pred
+
         a = alpha_t.clone()
         s = sigma_t.clone()
         while a.dim() < x_dm.dim():

@@ -39,12 +39,12 @@ import torch
 from diffusers import DDPMScheduler, UNet2DModel
 
 from shared.aligner import Diff2FlowAligner
-from shared.args import add_common_args, add_dataset_args, add_eval_args, add_lora_args, add_diffusion_args, add_metrics_output_args
+from shared.args import add_common_args, add_dataset_args, add_eval_args, add_lora_args, add_diffusion_args, add_metrics_output_args, add_alignment_args
 from shared.evaluation import (
     prepare_real_images, compute_fid, generate_and_save_samples, print_summary, save_results
 )
 from shared.lora import apply_lora
-from inference_scripts.inference_diff2flow import sample_euler
+from inference_scripts.inference_diff2flow import sample_euler, sample_heun
 
 
 def parse_args():
@@ -61,11 +61,16 @@ def parse_args():
     add_dataset_args(parser)
     add_eval_args(parser)
     add_diffusion_args(parser)
+    add_alignment_args(parser)
 
     add_metrics_output_args(parser,
                             output_dir_default="diff2flow_eval",
                             scratch_dir_default="/scratch/ram1g23/diff2flow_eval_tmp",
                             step_counts_default=[2, 4, 10, 25, 50, 100])
+
+    parser.add_argument("--solver", type=str, default="euler",
+                        choices=["euler", "heun"],
+                        help="ODE solver for sampling. Heun uses 2x NFE per step.")
 
     add_common_args(parser)
     return parser.parse_args()
@@ -95,8 +100,8 @@ def main():
     model = UNet2DModel.from_pretrained(args.pretrained_model_path)
 
     if args.use_lora:
-        print(f"Applying LoRA (rank={args.lora_rank})")
-        apply_lora(model, rank=args.lora_rank)
+        print(f"Applying LoRA (rank={args.lora_rank}, placement={args.lora_placement})")
+        apply_lora(model, rank=args.lora_rank, placement=args.lora_placement)
 
     state_dict = load_safetensors(args.checkpoint_path, device="cpu")
     model.load_state_dict(state_dict)
@@ -104,9 +109,17 @@ def main():
     model.eval()
     print(f"Loaded checkpoint: {args.checkpoint_path}")
 
-    # Build aligner
+    # Build aligner (must match the flags used during training)
     noise_scheduler = DDPMScheduler(num_train_timesteps=args.num_train_timesteps)
-    aligner = Diff2FlowAligner(noise_scheduler)
+    aligner = Diff2FlowAligner(
+        noise_scheduler,
+        use_timestep_rescaling=not args.no_timestep_rescaling,
+        use_interpolant_rescaling=not args.no_interpolant_rescaling,
+        use_velocity_translation=not args.no_velocity_translation,
+    )
+
+    sampler = sample_heun if args.solver == "heun" else sample_euler
+    print(f"Solver: {args.solver}")
 
     real_dir = prepare_real_images(args, scratch_dir)
 
@@ -117,7 +130,7 @@ def main():
         print(f"Evaluating: {num_steps} Euler steps  (NFE = {num_steps})")
         print(f"{'='*60}")
 
-        sample_fn = lambda n, dev, s: sample_euler(model, aligner, n, args.image_size, num_steps, dev, s)
+        sample_fn = lambda n, dev, s: sampler(model, aligner, n, args.image_size, num_steps, dev, s)
         sample_dir, total_time = generate_and_save_samples(
             sample_fn,
             num_samples=args.num_samples,
@@ -133,9 +146,11 @@ def main():
         time_per_image = total_time / args.num_samples
         images_per_second = args.num_samples / total_time
 
+        nfe = num_steps * (2 if args.solver == "heun" else 1)
         result = {
             "num_steps": num_steps,
-            "nfe_per_image": num_steps,
+            "nfe_per_image": nfe,
+            "solver": args.solver,
             "fid": round(fid_score, 4),
             "total_time_s": round(total_time, 2),
             "time_per_image_s": round(time_per_image, 5),
@@ -144,7 +159,7 @@ def main():
         }
         results.append(result)
 
-        print(f"\n  Steps (NFE): {num_steps}")
+        print(f"\n  Steps: {num_steps}  (NFE: {nfe})")
         print(f"  FID:         {fid_score:.4f}")
         print(f"  Time/image:  {time_per_image:.5f}s")
         print(f"  Images/sec:  {images_per_second:.2f}")

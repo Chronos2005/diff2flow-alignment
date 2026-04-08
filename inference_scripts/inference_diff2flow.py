@@ -76,6 +76,52 @@ def sample_euler(model, aligner, num_samples, image_size, num_steps, device, see
     return x.clamp(-1, 1)
 
 
+@torch.no_grad()
+def sample_heun(model, aligner, num_samples, image_size, num_steps, device, seed=None):
+    """
+    Generate images via Heun's method (2nd-order Runge-Kutta) on the FM ODE.
+    t=0 (noise) -> t=1 (data)
+
+    Costs 2 model evaluations per step, so NFE = 2 * num_steps.
+    To compare at a fixed NFE budget with Euler, use half the step count.
+    """
+    if seed is not None:
+        torch.manual_seed(seed)
+
+    shape = (num_samples, 3, image_size, image_size)
+    x = torch.randn(shape, device=device)
+
+    dt = 1.0 / num_steps
+    for i in range(num_steps):
+        t = i * dt
+        t_next = (i + 1) * dt
+
+        # --- Eval 1: velocity at current x(t) ---
+        t_fm = torch.full((num_samples,), t, device=device)
+        t_dm = aligner.t_fm_to_t_dm(t_fm)
+        alpha_t, sigma_t = aligner.get_alpha_sigma(t_dm)
+        x_dm = aligner.x_fm_to_x_dm(x, alpha_t, sigma_t)
+        t_dm_input = t_dm.long().clamp(0, aligner.T - 1)
+        eps_pred = model(x_dm, t_dm_input, return_dict=False)[0]
+        v1 = aligner.eps_to_velocity(eps_pred, x_dm, alpha_t, sigma_t)
+
+        x_pred = x + dt * v1  # Euler predictor step
+
+        # --- Eval 2: velocity at predicted x(t+dt) ---
+        t_fm_next = torch.full((num_samples,), t_next, device=device)
+        t_dm_next = aligner.t_fm_to_t_dm(t_fm_next)
+        alpha_t_next, sigma_t_next = aligner.get_alpha_sigma(t_dm_next)
+        x_dm_next = aligner.x_fm_to_x_dm(x_pred, alpha_t_next, sigma_t_next)
+        t_dm_next_input = t_dm_next.long().clamp(0, aligner.T - 1)
+        eps_pred_next = model(x_dm_next, t_dm_next_input, return_dict=False)[0]
+        v2 = aligner.eps_to_velocity(eps_pred_next, x_dm_next, alpha_t_next, sigma_t_next)
+
+        # Heun correction: trapezoidal average of v1 and v2
+        x = x + dt * 0.5 * (v1 + v2)
+
+    return x.clamp(-1, 1)
+
+
 def make_grid(images, cols=None):
     if cols is None:
         cols = int(math.ceil(math.sqrt(len(images))))

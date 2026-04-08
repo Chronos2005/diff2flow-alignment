@@ -57,6 +57,9 @@ def add_lora_args(parser):
                         help="Use LoRA for parameter-efficient finetuning")
     parser.add_argument("--lora_rank", type=int, default=64,
                         help="LoRA rank (only used if --use_lora)")
+    parser.add_argument("--lora_placement", type=str, default="all",
+                        choices=["all", "attention", "feedforward"],
+                        help="Which layer types to apply LoRA to (default: all)")
 
 
 def add_diffusion_args(parser):
@@ -78,6 +81,16 @@ def add_inference_args(parser, output_dir_default="samples", num_steps_default=N
                         help="Images to generate per batch")
     parser.add_argument("--save_individual", action="store_true",
                         help="Also save each image individually")
+
+
+def add_alignment_args(parser):
+    """Alignment component ablation flags for Exp 1."""
+    parser.add_argument("--no_timestep_rescaling", action="store_true",
+                        help="Disable timestep remapping (T component)")
+    parser.add_argument("--no_interpolant_rescaling", action="store_true",
+                        help="Disable interpolant rescaling (I component)")
+    parser.add_argument("--no_velocity_translation", action="store_true",
+                        help="Disable velocity translation (V component)")
 
 
 def add_metrics_output_args(parser, output_dir_default, scratch_dir_default,
