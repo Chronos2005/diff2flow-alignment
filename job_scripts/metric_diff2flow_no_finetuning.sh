@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --time=24:00:00
 #SBATCH --output=../logs/phase1_%j.out
-#SBATCH --error=l../logs/phase1_%j.err
+#SBATCH --error=../logs/phase1_%j.err
  
 module load conda
  
