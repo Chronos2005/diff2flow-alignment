@@ -24,6 +24,7 @@ from tqdm import tqdm
 from accelerate import Accelerator
 
 from shared.aligner import Diff2FlowAligner
+from shared.args import add_dataset_args, add_training_args, add_lora_args, add_diffusion_args
 from shared.lora import apply_lora
 from shared.datasets import DATASET_DEFAULTS, get_dataset, get_data_root
 from shared.utils import make_grid, tensor_to_pil
@@ -82,26 +83,18 @@ def parse_args():
 
     parser.add_argument("--pretrained_model_path", type=str, required=True,
                         help="Path to pretrained DDPM model directory (saved via save_pretrained)")
-    parser.add_argument("--dataset", type=str, required=True, choices=["cifar10", "celeba"])
-    parser.add_argument("--data_root", type=str, default=None)
+    add_dataset_args(parser, include_custom=False, dataset_required=True)
+    # learning_rate_default=1e-5 (lower than pretraining since we're finetuning)
+    add_training_args(parser, learning_rate_default=1e-5)
+    add_lora_args(parser)
+    add_diffusion_args(parser)
+
     parser.add_argument("--output_dir", type=str, default=None)
     parser.add_argument("--image_size", type=int, default=None)
     parser.add_argument("--train_batch_size", type=int, default=None)
-    parser.add_argument("--num_epochs", type=int, default=None)
-    parser.add_argument("--learning_rate", type=float, default=1e-5,
-                        help="Learning rate (lower than pretraining since we're finetuning)")
-    parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--save_images_every", type=int, default=5)
-    parser.add_argument("--save_model_every", type=int, default=10)
     parser.add_argument("--num_warmup_steps", type=int, default=200)
-    parser.add_argument("--num_train_timesteps", type=int, default=1000,
-                        help="Number of diffusion timesteps in the original DDPM schedule")
     parser.add_argument("--num_inference_steps", type=int, default=50,
                         help="Number of Euler steps for FM sampling (can be much fewer than DDPM)")
-    parser.add_argument("--use_lora", action="store_true",
-                        help="Use LoRA for parameter-efficient finetuning")
-    parser.add_argument("--lora_rank", type=int, default=64,
-                        help="LoRA rank (only used if --use_lora)")
 
     return parser.parse_args()
 

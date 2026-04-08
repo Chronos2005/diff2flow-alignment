@@ -11,6 +11,7 @@ from accelerate import Accelerator
 from tqdm import tqdm
 import numpy as np
 
+from shared.args import add_dataset_args, add_training_args
 from shared.datasets import DATASET_DEFAULTS, CIFAR10_ROOT, CELEBA_ROOT, get_dataset, get_data_root
 from shared.utils import make_grid, tensor_to_pil
 
@@ -59,25 +60,31 @@ class FlowMatching:
         return x
 
 
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(description="Train a Flow Matching model on CIFAR-10 or CelebA")
 
-    parser.add_argument("--dataset", type=str, required=True, choices=["cifar10", "celeba"], help="Dataset to train on")
-    parser.add_argument("--data_root", type=str, default=None, help="Root directory of the dataset")
-    parser.add_argument("--output_dir", type=str, default=None, help="Output directory")
-    parser.add_argument("--image_size", type=int, default=None, help="Image size")
-    parser.add_argument("--batch_size", type=int, default=None, help="Per-GPU training batch size")
-    parser.add_argument("--num_epochs", type=int, default=None, help="Number of training epochs")
-    parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate (default: 1e-4)")
-    parser.add_argument("--sigma_min", type=float, default=1e-4, help="Minimum sigma for flow matching (default: 1e-4)")
-    parser.add_argument("--num_workers", type=int, default=4, help="Number of DataLoader workers (default: 4)")
-    parser.add_argument("--save_images_every", type=int, default=5, help="Save sample images every N epochs (default: 5)")
-    parser.add_argument("--save_model_every", type=int, default=10, help="Save model checkpoint every N epochs (default: 10)")
-    parser.add_argument("--num_inference_steps", type=int, default=1000, help="Number of Euler steps during sampling (default: 1000)")
-    parser.add_argument("--resume", type=str, default=None, help="Path to a checkpoint .pt file to resume training from")
-    parser.add_argument("--mixed_precision", type=str, default="no", choices=["no", "fp16", "bf16"], help="Mixed precision mode (default: no)")
+    add_dataset_args(parser, include_custom=False, dataset_required=True)
+    add_training_args(parser)
 
-    args = parser.parse_args()
+    parser.add_argument("--output_dir", type=str, default=None)
+    parser.add_argument("--image_size", type=int, default=None)
+    parser.add_argument("--batch_size", type=int, default=None,
+                        help="Per-GPU training batch size")
+    parser.add_argument("--sigma_min", type=float, default=1e-4,
+                        help="Minimum sigma for flow matching (default: 1e-4)")
+    parser.add_argument("--num_inference_steps", type=int, default=1000,
+                        help="Number of Euler steps during sampling (default: 1000)")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Path to a checkpoint .pt file to resume training from")
+    parser.add_argument("--mixed_precision", type=str, default="no",
+                        choices=["no", "fp16", "bf16"],
+                        help="Mixed precision mode (default: no)")
+
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
 
     # Initialize Accelerator
     accelerator = Accelerator(

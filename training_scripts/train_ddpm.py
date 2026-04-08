@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from accelerate import Accelerator
 
+from shared.args import add_dataset_args, add_training_args, add_diffusion_args
 from shared.datasets import DATASET_DEFAULTS, get_dataset, get_data_root
 from shared.utils import make_grid
 
@@ -20,34 +21,17 @@ OUTPUT_DIRS = {"cifar10": "ddpm_cifar10", "celeba": "ddpm_celeba"}
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a DDPM on CIFAR-10 or CelebA")
 
-    parser.add_argument(
-        "--dataset",
-        type=str,
-        required=True,
-        choices=["cifar10", "celeba"],
-        help="Dataset to train on",
-    )
-    parser.add_argument(
-        "--data_root",
-        type=str,
-        default=None,
-        help="Path to the dataset root directory",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default=None,
-        help="Output directory (default: ddpm_cifar10 or ddpm_celeba)",
-    )
-    parser.add_argument("--image_size", type=int, default=None, help="Image size (default: 32 for CIFAR-10, 64 for CelebA)")
-    parser.add_argument("--train_batch_size", type=int, default=None, help="Training batch size (default: 128 for CIFAR-10, 64 for CelebA)")
-    parser.add_argument("--num_epochs", type=int, default=None, help="Number of training epochs (default: 50 for CIFAR-10, 100 for CelebA)")
-    parser.add_argument("--learning_rate", type=float, default=1e-4)
-    parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--save_images_every", type=int, default=5)
-    parser.add_argument("--save_model_every", type=int, default=10)
+    add_dataset_args(parser, include_custom=False, dataset_required=True)
+    add_training_args(parser)
+    add_diffusion_args(parser)
+
+    parser.add_argument("--output_dir", type=str, default=None,
+                        help="Output directory (default: ddpm_cifar10 or ddpm_celeba)")
+    parser.add_argument("--image_size", type=int, default=None,
+                        help="Image size (default: 32 for CIFAR-10, 64 for CelebA)")
+    parser.add_argument("--train_batch_size", type=int, default=None,
+                        help="Training batch size (default: 128 for CIFAR-10, 64 for CelebA)")
     parser.add_argument("--num_warmup_steps", type=int, default=500)
-    parser.add_argument("--num_train_timesteps", type=int, default=1000)
     parser.add_argument("--num_inference_steps", type=int, default=1000)
 
     return parser.parse_args()

@@ -9,6 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import torch
 from diffusers import UNet2DModel
 
+from shared.args import add_common_args, add_inference_args
 from shared.utils import make_grid, tensor_to_pil
 
 
@@ -17,22 +18,8 @@ def parse_args():
 
     parser.add_argument("--model_path", type=str, required=True,
                         help="Path to the saved model directory (e.g. flow_matching_cifar10/final_model)")
-    parser.add_argument("--output_dir", type=str, default="fm_samples",
-                        help="Directory to save generated images")
-    parser.add_argument("--num_images", type=int, default=16,
-                        help="Number of images to generate")
-    parser.add_argument("--num_steps", type=int, nargs="+", default=[100],
-                        help="Number of Euler steps. Pass multiple values to compare, "
-                             "e.g. --num_steps 10 50 100")
-    parser.add_argument("--image_size", type=int, default=32)
-    parser.add_argument("--batch_size", type=int, default=16,
-                        help="Images to generate per batch")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed for reproducibility")
-    parser.add_argument("--device", type=str, default=None,
-                        help="Device (default: cuda if available, else cpu)")
-    parser.add_argument("--save_individual", action="store_true",
-                        help="Also save each image individually")
+    add_inference_args(parser, output_dir_default="fm_samples", num_steps_default=[100])
+    add_common_args(parser)
 
     return parser.parse_args()
 

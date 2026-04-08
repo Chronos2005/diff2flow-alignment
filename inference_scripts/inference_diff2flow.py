@@ -38,6 +38,7 @@ from diffusers import DDPMScheduler, UNet2DModel
 from PIL import Image
 
 from shared.aligner import Diff2FlowAligner
+from shared.args import add_common_args, add_inference_args, add_lora_args, add_diffusion_args
 from shared.lora import apply_lora
 from shared.utils import tensor_to_pil
 
@@ -95,24 +96,10 @@ def parse_args():
 
     parser.add_argument("--checkpoint_path", type=str, required=True,
                         help="Path to Diff2Flow checkpoint directory (saved with save_pretrained)")
-    parser.add_argument("--num_images", type=int, default=16,
-                        help="Number of images to generate")
-    parser.add_argument("--num_steps", type=int, nargs="+", default=[50],
-                        help="Number of Euler steps. Pass multiple values to compare, "
-                             "e.g. --num_steps 2 4 10 50")
-    parser.add_argument("--image_size", type=int, default=32)
-    parser.add_argument("--num_train_timesteps", type=int, default=1000)
-    parser.add_argument("--batch_size", type=int, default=16,
-                        help="Batch size for generation (if num_images > batch_size)")
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--output_dir", type=str, default="diff2flow_samples")
-    parser.add_argument("--use_lora", action="store_true",
-                        help="Set if the checkpoint was trained with LoRA")
-    parser.add_argument("--lora_rank", type=int, default=64)
-    parser.add_argument("--device", type=str, default=None,
-                        help="Device (default: cuda if available, else cpu)")
-    parser.add_argument("--save_individual", action="store_true",
-                        help="Also save each image individually")
+    add_inference_args(parser, output_dir_default="diff2flow_samples", num_steps_default=[50])
+    add_lora_args(parser)
+    add_diffusion_args(parser)
+    add_common_args(parser)
 
     return parser.parse_args()
 

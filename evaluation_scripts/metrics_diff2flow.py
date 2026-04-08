@@ -43,6 +43,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from shared.aligner import Diff2FlowAligner
+from shared.args import add_common_args, add_dataset_args, add_eval_args, add_lora_args, add_diffusion_args, add_metrics_output_args
 from shared.lora import apply_lora
 from shared.utils import tensor_to_pil
 from inference_scripts.inference_diff2flow import sample_euler
@@ -56,31 +57,19 @@ def parse_args():
                         help="Path to Diff2Flow checkpoint (.safetensors file)")
     parser.add_argument("--pretrained_model_path", type=str, required=True,
                         help="Path to original DDPM model (for architecture)")
-    parser.add_argument("--use_lora", action="store_true")
-    parser.add_argument("--lora_rank", type=int, default=64)
+    add_lora_args(parser)
 
     # Evaluation settings
-    parser.add_argument("--dataset", type=str, default="cifar10",
-                        choices=["cifar10", "celeba", "custom"])
-    parser.add_argument("--data_root", type=str, default=None,
-                        help="Dataset root (for cifar10/celeba) or folder of real images (for custom)")
-    parser.add_argument("--num_samples", type=int, default=10000,
-                        help="Number of samples to generate for FID (10k-50k recommended)")
-    parser.add_argument("--step_counts", type=int, nargs="+", default=[2, 4, 10, 25, 50, 100],
-                        help="List of Euler step counts to evaluate")
-    parser.add_argument("--batch_size", type=int, default=128,
-                        help="Batch size for generation")
-    parser.add_argument("--image_size", type=int, default=32)
-    parser.add_argument("--num_train_timesteps", type=int, default=1000)
+    add_dataset_args(parser)
+    add_eval_args(parser)
+    add_diffusion_args(parser)
 
-    # Output
-    parser.add_argument("--output_dir", type=str, default="diff2flow_eval")
-    parser.add_argument("--scratch_dir", type=str, default="/scratch/ram1g23/diff2flow_eval_tmp",
-                        help="Scratch directory for temporary generated/real images")
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--keep_samples", action="store_true",
-                        help="Keep generated sample folders after FID computation")
+    add_metrics_output_args(parser,
+                            output_dir_default="diff2flow_eval",
+                            scratch_dir_default="/scratch/ram1g23/diff2flow_eval_tmp",
+                            step_counts_default=[2, 4, 10, 25, 50, 100])
+
+    add_common_args(parser)
     return parser.parse_args()
 
 
