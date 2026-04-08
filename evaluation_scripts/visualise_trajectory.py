@@ -20,6 +20,7 @@ import argparse
 import numpy as np
 import torch
 import torch.nn as nn
+from safetensors.torch import load_file as load_safetensors
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -337,9 +338,8 @@ def load_flow_matching(args, device):
     )
     ckpt_path = args.flow_model
     if os.path.isdir(ckpt_path):
-        ckpt_path = os.path.join(ckpt_path, "model.pt")
-    ckpt = torch.load(ckpt_path, map_location=device)
-    unet.load_state_dict(ckpt["model_state_dict"])
+        ckpt_path = os.path.join(ckpt_path, "model.safetensors")
+    unet.load_state_dict(load_safetensors(ckpt_path, device=str(device)))
     return unet.to(device).eval()
 
 
@@ -353,8 +353,7 @@ def load_diff2flow(args, device):
     scheduler = DDPMScheduler(num_train_timesteps=1000)
     _register_schedule_from_betas(flow_model, scheduler.betas)
     flow_model = flow_model.to(device)
-    state = torch.load(args.diff2flow_model, map_location=device)
-    flow_model.load_state_dict(state)
+    flow_model.load_state_dict(load_safetensors(args.diff2flow_model, device=str(device)))
     return flow_model.eval()
 
 
