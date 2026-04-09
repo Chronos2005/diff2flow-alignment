@@ -12,7 +12,7 @@
 
 module load conda
 source activate /home/ram1g23/.conda/envs/diffusion_flow_study
-
+ln -sf ~/inception_cache/inception-2015-12-05.pt /tmp/inception-2015-12-05.pt
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 cp /iridisfs/home/ram1g23/Projects/diff2flow-alignment/inception-2015-12-05.pt /tmp/
