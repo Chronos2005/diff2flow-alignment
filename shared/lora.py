@@ -30,7 +30,10 @@ class LoRAConv2d(nn.Module):
         if self.original.bias is not None:
             self.original.bias.requires_grad_(False)
 
-        self.lora_down = nn.Conv2d(original.in_channels, rank, 1, bias=False)
+        self.lora_down = nn.Conv2d(
+            original.in_channels, rank, 1,
+            stride=original.stride, bias=False,
+        )
         self.lora_up = nn.Conv2d(rank, original.out_channels, 1, bias=False)
         nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
         nn.init.zeros_(self.lora_up.weight)
