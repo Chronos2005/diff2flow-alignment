@@ -31,7 +31,7 @@ python ../../evaluation_scripts/metrics_diff2flow.py \
   --checkpoint_path ${CKPT} \
   --pretrained_model_path /scratch/ram1g23/Models/Cifar-10/ddpm_cifar10/final_model \
   --dataset cifar10 \
-  --num_samples 10000 \
+  --num_samples 50000 \
   --step_counts 10 25 50 \
   --use_lora \
   --lora_rank 64 \

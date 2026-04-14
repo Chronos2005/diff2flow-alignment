@@ -40,7 +40,7 @@ python ../../evaluation_scripts/metrics_diff2flow.py \
   --checkpoint_path ${CKPT} \
   --pretrained_model_path ${PRETRAIN} \
   --dataset cifar10 \
-  --num_samples 10000 \
+  --num_samples 50000 \
   --step_counts 2 4 8 \
   --solver euler \
   --output_dir /scratch/ram1g23/exp4_solver/euler \
@@ -53,7 +53,7 @@ python ../../evaluation_scripts/metrics_diff2flow.py \
   --checkpoint_path ${CKPT} \
   --pretrained_model_path ${PRETRAIN} \
   --dataset cifar10 \
-  --num_samples 10000 \
+  --num_samples 50000 \
   --step_counts 1 2 4 \
   --solver heun \
   --output_dir /scratch/ram1g23/exp4_solver/heun \

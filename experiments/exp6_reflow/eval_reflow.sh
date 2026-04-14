@@ -31,7 +31,7 @@ echo "Model: ${MODEL_PATH}"
 python ../../evaluation_scripts/metrics_fm.py \
   --model_path ${MODEL_PATH} \
   --dataset cifar10 \
-  --num_samples 10000 \
+  --num_samples 50000 \
   --step_counts 1 2 4 8 16 50 \
   --output_dir ${OUTPUT_DIR} \
   --scratch_dir /scratch/ram1g23/exp6_tmp_${SLURM_JOB_ID}

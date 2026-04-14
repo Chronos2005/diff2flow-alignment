@@ -36,7 +36,7 @@ python ../../evaluation_scripts/metrics_diff2flow.py \
   --checkpoint_path ${CKPT} \
   --pretrained_model_path /scratch/ram1g23/Models/Cifar-10/ddpm_cifar10/final_model \
   --dataset cifar10 \
-  --num_samples 10000 \
+  --num_samples 50000 \
   --step_counts 2 4 8 16 50 \
   --output_dir ${OUTPUT_DIR} \
   --scratch_dir /scratch/ram1g23/exp3_tmp_${SLURM_JOB_ID}
