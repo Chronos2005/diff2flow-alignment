@@ -39,7 +39,10 @@ EOF
 
 echo "===== END CHECK ====="
 
-accelerate launch --num_processes=2 ../training_scripts/train_flow_matching.py \
+accelerate launch --num_processes=2 --mixed_precision="bf16" ../training_scripts/train_flow_matching.py \
     --dataset cifar10 \
     --num_epochs 1000 \
-    --output_dir /scratch/ram1g23/fm_cifar10_long
+    --output_dir /scratch/ram1g23/fm_cifar10_long2 \
+    --batch_size 256
+
+kill $NVIDIA_SMI_PID 2>/dev/null

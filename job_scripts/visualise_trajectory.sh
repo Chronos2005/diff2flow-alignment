@@ -3,17 +3,15 @@
 #SBATCH --account=ecsstudents
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:2
-#SBATCH --cpus-per-task=12
-#SBATCH --time=24:00:00
-#SBATCH --output=logs/ddpm_long_%j.out
-#SBATCH --error=logs/ddpm_long_%j.err
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=02:00:00
+#SBATCH --output=logs/vis_traj_%j.out
+#SBATCH --error=logs/vis_traj_%j.err
 
 module load conda
 
 source activate /home/ram1g23/.conda/envs/diffusion_flow_study
-
-echo "Python: $(which python)"
 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
@@ -22,8 +20,6 @@ echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $(hostname)"
 echo "Python: $(which python)"
 echo "Conda env: $CONDA_DEFAULT_ENV"
-echo "Conda prefix: $CONDA_PREFIX"
-echo "PATH: $PATH"
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
 echo "----- PYTORCH & CUDA -----"
 
@@ -39,18 +35,12 @@ EOF
 
 echo "===== END CHECK ====="
 
-echo "----- GPU INFO -----"
-nvidia-smi
-echo "--------------------"
-
-nvidia-smi --query-gpu=memory.used,memory.free,utilization.gpu --format=csv -l 60 &
-NVIDIA_SMI_PID=$!
-
-accelerate launch --num_processes=2 --mixed_precision="bf16" ../training_scripts/train_ddpm.py \
-    --dataset cifar10 \
-    --num_epochs 1000 \
-    --output_dir /scratch/ram1g23/ddpm_cifar10_long2 \
-    --batch_size 512
-
-kill $NVIDIA_SMI_PID 2>/dev/null
-
+python ../evaluation_scripts/visualise_trajectory.py \
+    --ddpm_model      /scratch/ram1g23/Models/Cifar-10/ddpm_cifar10/final_model \
+    --flow_model      /scratch/ram1g23/Models/Cifar-10/flow_matching_cifar10/final_model \
+    --diff2flow_model /scratch/ram1g23/exp1_alignment/TIV/final_model \
+    --output_dir      /scratch/ram1g23/trajectory_vis \
+    --num_samples     500 \
+    --num_steps       50 \
+    --num_snapshots   200 \
+    --seed            42
