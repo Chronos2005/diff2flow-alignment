@@ -1,0 +1,55 @@
+variant,components_active,nfe,fid,images_per_second,notes
+DDPM,,1000,38.06,1.18,DDPM baseline (1000 DDPM steps)
+FM_scratch,,100,41.99,12.11,Flow matching trained from scratch
+FM_scratch,,50,42.69,24.23,Flow matching trained from scratch
+FM_scratch,,25,44.06,48.56,Flow matching trained from scratch
+FM_scratch,,10,49.71,121.62,Flow matching trained from scratch
+FM_scratch,,4,82.39,306.97,Flow matching trained from scratch
+FM_scratch,,2,214.15,528.12,Flow matching trained from scratch
+naive_transfer,,100,462.05,11.78,DDPM weights plugged into FM sampler — no alignment
+naive_transfer,,50,462.12,23.60,DDPM weights plugged into FM sampler — no alignment
+naive_transfer,,25,462.25,47.22,DDPM weights plugged into FM sampler — no alignment
+naive_transfer,,10,462.66,118.68,DDPM weights plugged into FM sampler — no alignment
+naive_transfer,,4,463.71,301.64,DDPM weights plugged into FM sampler — no alignment
+naive_transfer,,2,463.73,505.81,DDPM weights plugged into FM sampler — no alignment
+alignment_only,TIV,100,44.66,11.99,Full alignment applied — zero-shot no LoRA fine-tuning
+alignment_only,TIV,50,46.30,24.01,Full alignment applied — zero-shot no LoRA fine-tuning
+alignment_only,TIV,25,50.19,48.09,Full alignment applied — zero-shot no LoRA fine-tuning
+alignment_only,TIV,10,67.10,120.69,Full alignment applied — zero-shot no LoRA fine-tuning
+alignment_only,TIV,4,118.33,304.64,Full alignment applied — zero-shot no LoRA fine-tuning
+alignment_only,TIV,2,213.12,589.60,Full alignment applied — zero-shot no LoRA fine-tuning
+T,T,50,403.58,24.02,Timestep rescaling only (LoRA fine-tuned)
+T,T,25,406.50,48.11,Timestep rescaling only (LoRA fine-tuned)
+T,T,10,415.18,120.75,Timestep rescaling only (LoRA fine-tuned)
+T,T,4,431.89,305.29,Timestep rescaling only (LoRA fine-tuned)
+T,T,2,449.62,587.31,Timestep rescaling only (LoRA fine-tuned)
+I,I,50,464.31,23.13,Interpolant rescaling only (LoRA fine-tuned)
+I,I,25,464.31,46.21,Interpolant rescaling only (LoRA fine-tuned)
+I,I,10,464.31,116.64,Interpolant rescaling only (LoRA fine-tuned)
+I,I,4,464.31,298.04,Interpolant rescaling only (LoRA fine-tuned)
+I,I,2,464.31,590.56,Interpolant rescaling only (LoRA fine-tuned)
+V,V,50,268.01,23.86,Velocity translation only (LoRA fine-tuned)
+V,V,25,269.53,47.82,Velocity translation only (LoRA fine-tuned)
+V,V,10,271.67,119.98,Velocity translation only (LoRA fine-tuned)
+V,V,4,298.60,303.38,Velocity translation only (LoRA fine-tuned)
+V,V,2,283.76,575.96,Velocity translation only (LoRA fine-tuned)
+TI,T+I,50,464.34,24.03,Timestep + Interpolant (no velocity) — LoRA fine-tuned
+TI,T+I,25,464.35,48.16,Timestep + Interpolant (no velocity) — LoRA fine-tuned
+TI,T+I,10,464.35,120.80,Timestep + Interpolant (no velocity) — LoRA fine-tuned
+TI,T+I,4,464.35,305.84,Timestep + Interpolant (no velocity) — LoRA fine-tuned
+TI,T+I,2,464.35,599.34,Timestep + Interpolant (no velocity) — LoRA fine-tuned
+TV,T+V,50,42.03,23.92,Timestep + Velocity (no interpolant) — LoRA fine-tuned
+TV,T+V,25,44.26,47.96,Timestep + Velocity (no interpolant) — LoRA fine-tuned
+TV,T+V,10,53.76,120.30,Timestep + Velocity (no interpolant) — LoRA fine-tuned
+TV,T+V,4,97.27,304.08,Timestep + Velocity (no interpolant) — LoRA fine-tuned
+TV,T+V,2,175.25,600.13,Timestep + Velocity (no interpolant) — LoRA fine-tuned
+IV,I+V,50,259.74,23.83,Interpolant + Velocity (no timestep) — LoRA fine-tuned
+IV,I+V,25,261.56,47.76,Interpolant + Velocity (no timestep) — LoRA fine-tuned
+IV,I+V,10,264.41,119.85,Interpolant + Velocity (no timestep) — LoRA fine-tuned
+IV,I+V,4,289.91,302.71,Interpolant + Velocity (no timestep) — LoRA fine-tuned
+IV,I+V,2,288.64,592.98,Interpolant + Velocity (no timestep) — LoRA fine-tuned
+TIV,T+I+V,50,44.65,23.90,Full alignment (all 3 components) — LoRA fine-tuned
+TIV,T+I+V,25,48.20,47.89,Full alignment (all 3 components) — LoRA fine-tuned
+TIV,T+I+V,10,62.82,120.28,Full alignment (all 3 components) — LoRA fine-tuned
+TIV,T+I+V,4,117.11,304.29,Full alignment (all 3 components) — LoRA fine-tuned
+TIV,T+I+V,2,195.68,598.20,Full alignment (all 3 components) — LoRA fine-tuned

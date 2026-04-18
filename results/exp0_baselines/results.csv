@@ -1,0 +1,26 @@
+model,sampler,nfe,fid,images_per_second,notes
+ddpm,ddim,2,181.0892,576.37,DDIM sampler on DDPM weights
+ddpm,ddim,4,99.2812,301.26,DDIM sampler on DDPM weights
+ddpm,ddim,10,55.6327,118.82,DDIM sampler on DDPM weights
+ddpm,ddim,25,42.4143,47.30,DDIM sampler on DDPM weights
+ddpm,ddim,50,39.0929,23.60,DDIM sampler on DDPM weights
+ddpm,ddim,100,37.6641,11.79,DDIM sampler on DDPM weights
+ddpm,ancestral,1000,38.06,1.18,Full ancestral DDPM (gold standard)
+fm_scratch,euler,2,214.15,528.12,FM trained from scratch
+fm_scratch,euler,4,82.39,306.97,FM trained from scratch
+fm_scratch,euler,10,49.71,121.62,FM trained from scratch
+fm_scratch,euler,25,44.06,48.56,FM trained from scratch
+fm_scratch,euler,50,42.69,24.23,FM trained from scratch
+fm_scratch,euler,100,41.99,12.11,FM trained from scratch
+naive_transfer,euler,2,463.73,505.81,DDPM weights plugged into FM Euler — no alignment
+naive_transfer,euler,4,463.71,301.64,DDPM weights plugged into FM Euler — no alignment
+naive_transfer,euler,10,462.66,118.68,DDPM weights plugged into FM Euler — no alignment
+naive_transfer,euler,25,462.25,47.22,DDPM weights plugged into FM Euler — no alignment
+naive_transfer,euler,50,462.12,23.60,DDPM weights plugged into FM Euler — no alignment
+naive_transfer,euler,100,462.05,11.78,DDPM weights plugged into FM Euler — no alignment
+alignment_only_tiv,euler,2,213.12,589.60,Full TIV alignment — zero-shot no LoRA
+alignment_only_tiv,euler,4,118.33,304.64,Full TIV alignment — zero-shot no LoRA
+alignment_only_tiv,euler,10,67.10,120.69,Full TIV alignment — zero-shot no LoRA
+alignment_only_tiv,euler,25,50.19,48.09,Full TIV alignment — zero-shot no LoRA
+alignment_only_tiv,euler,50,46.30,24.01,Full TIV alignment — zero-shot no LoRA
+alignment_only_tiv,euler,100,44.66,11.99,Full TIV alignment — zero-shot no LoRA

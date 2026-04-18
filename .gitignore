@@ -6,4 +6,3 @@ logs/
 *.safetensors
 datasets/
 .idea/
-results/

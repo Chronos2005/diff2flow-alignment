@@ -1,0 +1,10 @@
+variant,placement,lora_rank,nfe,fid,time_per_image_s,images_per_sec,notes
+lora_all,all,64,10,67.0499,0.01178,84.89,LoRA on all Linear and Conv2d layers
+lora_all,all,64,25,50.8497,0.02925,34.19,LoRA on all Linear and Conv2d layers
+lora_all,all,64,50,46.4314,0.05857,17.07,LoRA on all Linear and Conv2d layers
+lora_attention,attention,64,10,68.3517,0.00923,108.31,LoRA only on attention block layers
+lora_attention,attention,64,25,50.8087,0.02279,43.87,LoRA only on attention block layers
+lora_attention,attention,64,50,46.7347,0.04561,21.92,LoRA only on attention block layers
+lora_feedforward,feedforward,64,10,67.6601,0.01182,84.63,LoRA only on non-attention layers (conv + time emb)
+lora_feedforward,feedforward,64,25,51.018,0.02935,34.07,LoRA only on non-attention layers (conv + time emb)
+lora_feedforward,feedforward,64,50,46.7258,0.05876,17.02,LoRA only on non-attention layers (conv + time emb)
