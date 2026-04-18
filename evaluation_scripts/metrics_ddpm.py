@@ -138,15 +138,19 @@ def main():
     model.eval()
 
     if args.sampler == "ddim":
-        scheduler = DDIMScheduler.from_pretrained(
-            args.model_path,
+        scheduler = DDIMScheduler(
             num_train_timesteps=args.num_train_timesteps,
+            beta_start=0.0001,
+            beta_end=0.02,
+            beta_schedule="linear",
         )
         step_counts = sorted(args.step_counts)
     else:
-        scheduler = DDPMScheduler.from_pretrained(
-            args.model_path,
+        scheduler = DDPMScheduler(
             num_train_timesteps=args.num_train_timesteps,
+            beta_start=0.0001,
+            beta_end=0.02,
+            beta_schedule="linear",
         )
         # Full DDPM always runs num_train_timesteps steps
         step_counts = [args.num_train_timesteps]
