@@ -42,6 +42,57 @@ class LoRAConv2d(nn.Module):
         return self.original(x) + self.lora_up(self.lora_down(x))
 
 
+def merge_lora(model):
+    """
+    Merge LoRA deltas into their base weights and restore plain layers.
+
+    After merging, LoRALinear/LoRAConv2d wrappers are replaced with ordinary
+    nn.Linear/nn.Conv2d whose weights absorb the trained low-rank update.
+    The resulting model is identical in behaviour but has no LoRA overhead and
+    can be saved/loaded with the standard UNet2DModel from_pretrained API.
+    """
+    for name, module in list(model.named_modules()):
+        parts = name.split(".")
+        if not parts:
+            continue
+        parent = model
+        for p in parts[:-1]:
+            parent = getattr(parent, p)
+        attr_name = parts[-1]
+
+        if isinstance(module, LoRALinear):
+            merged_weight = (
+                module.original.weight.data
+                + module.lora_up.weight.data @ module.lora_down.weight.data
+            )
+            new_layer = nn.Linear(
+                module.original.in_features,
+                module.original.out_features,
+                bias=module.original.bias is not None,
+            )
+            new_layer.weight.data.copy_(merged_weight)
+            if module.original.bias is not None:
+                new_layer.bias.data.copy_(module.original.bias.data)
+            setattr(parent, attr_name, new_layer)
+
+        elif isinstance(module, LoRAConv2d):
+            # Both lora_down and lora_up are 1×1 convs; merge as matrix multiply
+            w_down = module.lora_down.weight.data.squeeze(-1).squeeze(-1)  # (rank, C_in)
+            w_up = module.lora_up.weight.data.squeeze(-1).squeeze(-1)     # (C_out, rank)
+            delta = (w_up @ w_down).unsqueeze(-1).unsqueeze(-1)           # (C_out, C_in, 1, 1)
+            orig = module.original
+            new_layer = nn.Conv2d(
+                orig.in_channels, orig.out_channels, orig.kernel_size,
+                stride=orig.stride, padding=orig.padding,
+                dilation=orig.dilation, groups=orig.groups,
+                bias=orig.bias is not None,
+            )
+            new_layer.weight.data.copy_(orig.weight.data + delta)
+            if orig.bias is not None:
+                new_layer.bias.data.copy_(orig.bias.data)
+            setattr(parent, attr_name, new_layer)
+
+
 def apply_lora(model, rank=64, placement="all"):
     """
     Apply LoRA to Linear and Conv2d layers in the model.

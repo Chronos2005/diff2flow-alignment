@@ -5,25 +5,21 @@ import argparse
 import torch
 import torch.nn.functional as F
 from diffusers import UNet2DModel
+from diffusers.training_utils import EMAModel
 from accelerate import Accelerator
+from accelerate.utils import set_seed
 from tqdm import tqdm
 import numpy as np
 
-from shared.args import add_dataset_args, add_training_args
+from shared.args import add_common_args, add_dataset_args, add_training_args
 from shared.datasets import DATASET_DEFAULTS, CIFAR10_ROOT, CELEBA_ROOT, get_dataset, get_data_root
 from shared.training import build_unet, make_dataloader, make_optimizer_and_scheduler
 from shared.utils import make_grid, tensor_to_pil
 
 # --- Dataset configs (extends shared defaults with FM-specific fields) ---
 DATASET_CONFIGS = {
-    "cifar10": {
-        "block_out_channels": (128, 128, 256, 256, 512, 512),
-        "output_dir": "flow_matching_cifar10",
-    },
-    "celeba": {
-        "block_out_channels": (128, 128, 256, 256, 512, 512),
-        "output_dir": "flow_matching_celeba",
-    },
+    "cifar10": {"output_dir": "flow_matching_cifar10"},
+    "celeba":  {"output_dir": "flow_matching_celeba"},
 }
 
 
@@ -62,6 +58,7 @@ class FlowMatching:
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a Flow Matching model on CIFAR-10 or CelebA")
 
+    add_common_args(parser)
     add_dataset_args(parser, include_custom=False, dataset_required=True)
     add_training_args(parser)
 
@@ -78,6 +75,9 @@ def parse_args():
     parser.add_argument("--mixed_precision", type=str, default="no",
                         choices=["no", "fp16", "bf16"],
                         help="Mixed precision mode (default: no)")
+    parser.add_argument("--ema_decay", type=float, default=0.9999)
+    parser.add_argument("--ema_inv_gamma", type=float, default=1.0)
+    parser.add_argument("--ema_power", type=float, default=0.75)
 
     return parser.parse_args()
 
@@ -90,6 +90,7 @@ def main():
         mixed_precision=args.mixed_precision,
         gradient_accumulation_steps=1,
     )
+    set_seed(args.seed)
 
     # Merge dataset defaults with CLI overrides
     defaults = DATASET_DEFAULTS[args.dataset]
@@ -123,13 +124,25 @@ def main():
 
     flow_matching = FlowMatching(sigma_min=args.sigma_min)
 
+    steps_per_epoch = len(dataloader) // accelerator.num_processes
     optimizer, lr_scheduler = make_optimizer_and_scheduler(
-        model.parameters(), args.learning_rate, 500, len(dataloader) * num_epochs,
+        model.parameters(), args.learning_rate, 500, steps_per_epoch * num_epochs,
     )
 
     model, optimizer, dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, dataloader, lr_scheduler
     )
+
+    ema_model = EMAModel(
+        accelerator.unwrap_model(model).parameters(),
+        decay=args.ema_decay,
+        use_ema_warmup=True,
+        inv_gamma=args.ema_inv_gamma,
+        power=args.ema_power,
+        model_cls=type(accelerator.unwrap_model(model)),
+        model_config=accelerator.unwrap_model(model).config,
+    )
+    ema_model.to(accelerator.device)
 
     # Optionally resume from checkpoint
     start_epoch = 0
@@ -145,6 +158,12 @@ def main():
             if "lr_scheduler_state_dict" in training_state:
                 lr_scheduler.load_state_dict(training_state["lr_scheduler_state_dict"])
             start_epoch = training_state["epoch"]
+        ema_dir = f"{resume_dir}_ema"
+        if os.path.isdir(ema_dir):
+            loaded_ema = EMAModel.from_pretrained(ema_dir, model_cls=UNet2DModel)
+            ema_model.load_state_dict(loaded_ema.state_dict())
+            ema_model.to(accelerator.device)
+            accelerator.print(f"Loaded EMA weights from {ema_dir}")
         accelerator.print(f"Resumed at epoch {start_epoch}")
 
     # Training loop
@@ -177,6 +196,7 @@ def main():
             optimizer.step()
             lr_scheduler.step()
             optimizer.zero_grad()
+            ema_model.step(accelerator.unwrap_model(model).parameters())
 
             epoch_loss += loss.item()
             num_batches += 1
@@ -188,6 +208,8 @@ def main():
         # Sample images (only on main process)
         if (epoch + 1) % args.save_images_every == 0 and accelerator.is_main_process:
             unwrapped_model = accelerator.unwrap_model(model)
+            ema_model.store(unwrapped_model.parameters())
+            ema_model.copy_to(unwrapped_model.parameters())
             unwrapped_model.eval()
             accelerator.print(f"Generating samples at epoch {epoch+1}...")
             with torch.no_grad():
@@ -202,21 +224,25 @@ def main():
                 grid = make_grid(pil_images, rows=4, cols=4)
                 save_path = f"{output_dir}/samples/epoch_{epoch+1}.png"
                 grid.save(save_path)
-                accelerator.print(f"Saved samples → {save_path}")
+                accelerator.print(f"Saved EMA samples → {save_path}")
+            ema_model.restore(unwrapped_model.parameters())
 
-        # Save checkpoint (only on main process)
-        if (epoch + 1) % args.save_model_every == 0 and accelerator.is_main_process:
+        # Save checkpoint
+        if (epoch + 1) % args.save_model_every == 0:
             checkpoint_dir = f"{output_dir}/checkpoint_epoch_{epoch+1}"
-            os.makedirs(checkpoint_dir, exist_ok=True)
-            unwrapped_model = accelerator.unwrap_model(model)
-            unwrapped_model.save_pretrained(checkpoint_dir)
-            torch.save({
-                "epoch": epoch + 1,
-                "optimizer_state_dict": optimizer.state_dict(),
-                "lr_scheduler_state_dict": lr_scheduler.state_dict(),
-                "loss": avg_loss,
-            }, f"{checkpoint_dir}/training_state.pt")
-            accelerator.print(f"Saved checkpoint → {checkpoint_dir}")
+            if accelerator.is_main_process:
+                os.makedirs(checkpoint_dir, exist_ok=True)
+                unwrapped_model = accelerator.unwrap_model(model)
+                unwrapped_model.save_pretrained(checkpoint_dir)
+                ema_model.save_pretrained(f"{checkpoint_dir}_ema")
+                torch.save({
+                    "epoch": epoch + 1,
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "lr_scheduler_state_dict": lr_scheduler.state_dict(),
+                    "loss": avg_loss,
+                }, f"{checkpoint_dir}/training_state.pt")
+            accelerator.save_state(f"{output_dir}/full_training_state")
+            accelerator.print(f"Saved checkpoint → {checkpoint_dir} (+ EMA)")
 
         accelerator.wait_for_everyone()
 
@@ -226,6 +252,9 @@ def main():
         os.makedirs(final_dir, exist_ok=True)
         unwrapped_model = accelerator.unwrap_model(model)
         unwrapped_model.save_pretrained(final_dir)
+        ema_model.save_pretrained(f"{output_dir}/final_model_ema")
+    accelerator.save_state(f"{output_dir}/full_training_state")
+    if accelerator.is_main_process:
         accelerator.print("Training complete!")
 
 

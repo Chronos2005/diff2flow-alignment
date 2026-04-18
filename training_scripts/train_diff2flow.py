@@ -23,7 +23,7 @@ from accelerate import Accelerator
 
 from shared.aligner import Diff2FlowAligner
 from shared.args import add_dataset_args, add_training_args, add_lora_args, add_diffusion_args, add_alignment_args
-from shared.lora import apply_lora
+from shared.lora import apply_lora, merge_lora
 from shared.datasets import DATASET_DEFAULTS, get_dataset, get_data_root
 from shared.training import make_dataloader, make_optimizer_and_scheduler
 from shared.utils import make_grid, tensor_to_pil
@@ -172,9 +172,10 @@ def main():
     # 5) Optimizer & scheduler
     # -----------------------------------------------------------------------
     trainable_params = [p for p in model.parameters() if p.requires_grad]
+    steps_per_epoch = len(dataloader) // accelerator.num_processes
     optimizer, lr_scheduler = make_optimizer_and_scheduler(
         trainable_params, args.learning_rate,
-        args.num_warmup_steps, len(dataloader) * args.num_epochs,
+        args.num_warmup_steps, steps_per_epoch * args.num_epochs,
     )
 
     model, optimizer, dataloader, lr_scheduler = accelerator.prepare(
@@ -229,7 +230,7 @@ def main():
 
             optimizer.zero_grad()
             accelerator.backward(loss)
-            torch.nn.utils.clip_grad_norm_(
+            accelerator.clip_grad_norm_(
                 [p for p in model.parameters() if p.requires_grad], 1.0
             )
             optimizer.step()
@@ -267,7 +268,11 @@ def main():
             unwrapped = accelerator.unwrap_model(model)
             ckpt_dir = f"{args.output_dir}/checkpoint_epoch_{epoch+1}"
             os.makedirs(ckpt_dir, exist_ok=True)
+            if args.use_lora:
+                merge_lora(unwrapped)
             unwrapped.save_pretrained(ckpt_dir)
+            if args.use_lora:
+                apply_lora(unwrapped, rank=args.lora_rank, placement=args.lora_placement)
             torch.save({
                 "epoch": epoch + 1,
                 "global_step": global_step,
@@ -281,6 +286,8 @@ def main():
         unwrapped = accelerator.unwrap_model(model)
         final_dir = f"{args.output_dir}/final_model"
         os.makedirs(final_dir, exist_ok=True)
+        if args.use_lora:
+            merge_lora(unwrapped)
         unwrapped.save_pretrained(final_dir)
         torch.save({
             "epoch": args.num_epochs,
