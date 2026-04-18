@@ -38,8 +38,7 @@ from diffusers import DDPMScheduler, UNet2DModel
 from PIL import Image
 
 from shared.aligner import Diff2FlowAligner
-from shared.args import add_common_args, add_inference_args, add_lora_args, add_diffusion_args
-from shared.lora import apply_lora
+from shared.args import add_common_args, add_inference_args, add_diffusion_args
 from shared.utils import tensor_to_pil
 
 
@@ -143,7 +142,6 @@ def parse_args():
     parser.add_argument("--checkpoint_path", type=str, required=True,
                         help="Path to Diff2Flow checkpoint directory (saved with save_pretrained)")
     add_inference_args(parser, output_dir_default="diff2flow_samples", num_steps_default=[50])
-    add_lora_args(parser)
     add_diffusion_args(parser)
     add_common_args(parser)
 
@@ -162,16 +160,8 @@ def load_model(args, device):
         training_state = torch.load(state_path, map_location="cpu", weights_only=False)
     ckpt_args = training_state.get("args", {})
 
-    # Apply LoRA before loading weights if the checkpoint was trained with it
-    use_lora = args.use_lora or ckpt_args.get("use_lora", False)
-    lora_rank = args.lora_rank or ckpt_args.get("lora_rank", 64)
-
+    # LoRA weights are merged into the base model at save time — load normally.
     model = UNet2DModel.from_pretrained(ckpt_dir)
-
-    if use_lora:
-        print(f"Applying LoRA (rank={lora_rank}) to match training config")
-        apply_lora(model, rank=lora_rank)
-
     model = model.to(device)
     model.eval()
 
