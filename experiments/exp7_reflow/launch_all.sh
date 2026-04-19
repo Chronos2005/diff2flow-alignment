@@ -1,5 +1,5 @@
 #!/bin/bash
-# Submit Exp 6: train reflow student, then evaluate at low NFE.
+# Submit Exp 7: train reflow student, then evaluate at low NFE.
 set -e
 
 TRAIN_JOB=$(sbatch --parsable train_reflow.sh)

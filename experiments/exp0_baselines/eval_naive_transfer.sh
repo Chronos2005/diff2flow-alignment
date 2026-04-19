@@ -23,8 +23,9 @@ source activate /home/ram1g23/.conda/envs/diffusion_flow_study
 ln -sf ~/inception_cache/inception-2015-12-05.pt /tmp/inception-2015-12-05.pt
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
-DDPM_MODEL=/scratch/ram1g23/Models/Cifar-10/ddpm_cifar10/final_model
-OUTPUT=/scratch/ram1g23/baselines/naive_transfer_eval
+RUN_TAG=${RUN_TAG:-${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}
+DDPM_MODEL=/scratch/ram1g23/ddpm_cifar10_long2/final_model_ema
+OUTPUT=/scratch/ram1g23/baselines/naive_transfer_eval/${RUN_TAG}
 
 echo "Job ID : $SLURM_JOB_ID"
 echo "Node   : $(hostname)"

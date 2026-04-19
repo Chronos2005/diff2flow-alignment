@@ -20,11 +20,12 @@ cp /iridisfs/home/ram1g23/Projects/diff2flow-alignment/inception-2015-12-05.pt /
 declare -a RANKS=(0 4 8 16 32 64 128 0)
 declare -a NAMES=("" "rank4" "rank8" "rank16" "rank32" "rank64" "rank128" "full_ft")
 
+RUN_TAG=${RUN_TAG:-${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}
 IDX=$SLURM_ARRAY_TASK_ID
 NAME=${NAMES[$IDX]}
 RANK=${RANKS[$IDX]}
 CKPT=/scratch/ram1g23/exp2_lora_rank/${NAME}/final_model/diffusion_pytorch_model.safetensors
-OUTPUT_DIR=/scratch/ram1g23/exp2_lora_rank/${NAME}/eval
+OUTPUT_DIR=/scratch/ram1g23/exp2_lora_rank/${NAME}/eval/${RUN_TAG}
 
 if [ $IDX -eq 7 ]; then
     LORA_FLAGS=""
@@ -38,9 +39,9 @@ echo "Checkpoint: ${CKPT}"
 
 python ../../evaluation_scripts/metrics_diff2flow.py \
   --checkpoint_path ${CKPT} \
-  --pretrained_model_path /scratch/ram1g23/Models/Cifar-10/ddpm_cifar10/final_model \
+  --pretrained_model_path /scratch/ram1g23/ddpm_cifar10_long2/final_model_ema \
   --dataset cifar10 \
-  --num_samples 50000 \
+  --num_samples 10000 \
   --step_counts 10 25 50 \
   --output_dir ${OUTPUT_DIR} \
   --scratch_dir /scratch/ram1g23/exp2_tmp_${NAME}_${SLURM_JOB_ID} \

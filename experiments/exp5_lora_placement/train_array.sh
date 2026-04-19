@@ -43,8 +43,8 @@ OUTPUT_DIR=/scratch/ram1g23/exp5_placement/${NAME}
 
 echo "Placement: ${PLACEMENT}  |  Output: ${OUTPUT_DIR}"
 
-accelerate launch --num_processes=2 ../../training_scripts/train_diff2flow.py \
-  --pretrained_model_path /scratch/ram1g23/Models/Cifar-10/ddpm_cifar10/final_model \
+accelerate launch --num_processes=2 --mixed_precision="bf16" ../../training_scripts/train_diff2flow.py \
+  --pretrained_model_path /scratch/ram1g23/ddpm_cifar10_long2/final_model_ema \
   --dataset cifar10 \
   --num_epochs 20 \
   --save_images_every 5 \
@@ -53,4 +53,5 @@ accelerate launch --num_processes=2 ../../training_scripts/train_diff2flow.py \
   --use_lora \
   --lora_rank 64 \
   --lora_placement ${PLACEMENT} \
+  --seed 42 \
   --output_dir ${OUTPUT_DIR}

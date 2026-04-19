@@ -25,8 +25,9 @@ cp /iridisfs/home/ram1g23/Projects/diff2flow-alignment/inception-2015-12-05.pt /
 # Uses the TIV checkpoint from Exp 1. Update CKPT if using a different run.
 # ---------------------------------------------------------------------------
 
+RUN_TAG=${RUN_TAG:-${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}
 CKPT=/scratch/ram1g23/exp1_alignment/TIV/final_model/diffusion_pytorch_model.safetensors
-OUTPUT_DIR=/scratch/ram1g23/exp3_low_nfe/eval
+OUTPUT_DIR=/scratch/ram1g23/exp3_low_nfe/eval/${RUN_TAG}
 
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $(hostname)"
@@ -34,9 +35,9 @@ echo "Checkpoint: ${CKPT}"
 
 python ../../evaluation_scripts/metrics_diff2flow.py \
   --checkpoint_path ${CKPT} \
-  --pretrained_model_path /scratch/ram1g23/Models/Cifar-10/ddpm_cifar10/final_model \
+  --pretrained_model_path /scratch/ram1g23/ddpm_cifar10_long2/final_model_ema \
   --dataset cifar10 \
-  --num_samples 50000 \
+  --num_samples 50 \
   --step_counts 2 4 8 16 50 \
   --output_dir ${OUTPUT_DIR} \
   --scratch_dir /scratch/ram1g23/exp3_tmp_${SLURM_JOB_ID}

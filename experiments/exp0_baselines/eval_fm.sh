@@ -14,7 +14,7 @@
 #
 # Euler sampling at 2/4/10/25/50/100 steps.
 #
-# Model: /scratch/ram1g23/Models/Cifar-10/flow_matching_cifar10/final_model
+# Model: /scratch/ram1g23/fm_cifar10_long2/final_model_ema
 # ---------------------------------------------------------------------------
 
 module load conda
@@ -22,8 +22,9 @@ source activate /home/ram1g23/.conda/envs/diffusion_flow_study
 ln -sf ~/inception_cache/inception-2015-12-05.pt /tmp/inception-2015-12-05.pt
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
-MODEL=/scratch/ram1g23/Models/Cifar-10/flow_matching_cifar10/final_model
-OUTPUT=/scratch/ram1g23/baselines/fm_eval
+RUN_TAG=${RUN_TAG:-${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}
+MODEL=/scratch/ram1g23/fm_cifar10_long2/final_model_ema
+OUTPUT=/scratch/ram1g23/baselines/fm_eval/${RUN_TAG}
 SCRATCH=${SCRATCH:-/scratch/ram1g23/baselines/tmp_fm_${SLURM_JOB_ID}}
 
 echo "Job ID : $SLURM_JOB_ID"

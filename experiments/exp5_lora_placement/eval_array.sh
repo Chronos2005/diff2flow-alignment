@@ -20,18 +20,19 @@ cp /iridisfs/home/ram1g23/Projects/diff2flow-alignment/inception-2015-12-05.pt /
 declare -a PLACEMENTS=("" "all" "attention" "feedforward")
 declare -a NAMES=("" "lora_all" "lora_attention" "lora_feedforward")
 
+RUN_TAG=${RUN_TAG:-${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}
 PLACEMENT=${PLACEMENTS[$SLURM_ARRAY_TASK_ID]}
 NAME=${NAMES[$SLURM_ARRAY_TASK_ID]}
 CKPT=/scratch/ram1g23/exp5_placement/${NAME}/final_model/diffusion_pytorch_model.safetensors
-OUTPUT_DIR=/scratch/ram1g23/exp5_placement/${NAME}/eval
+OUTPUT_DIR=/scratch/ram1g23/exp5_placement/${NAME}/eval/${RUN_TAG}
 
 echo "Evaluating placement: ${PLACEMENT}  |  Checkpoint: ${CKPT}"
 
 python ../../evaluation_scripts/metrics_diff2flow.py \
   --checkpoint_path ${CKPT} \
-  --pretrained_model_path /scratch/ram1g23/Models/Cifar-10/ddpm_cifar10/final_model \
+  --pretrained_model_path /scratch/ram1g23/ddpm_cifar10_long2/final_model_ema \
   --dataset cifar10 \
-  --num_samples 50000 \
+  --num_samples 10000 \
   --step_counts 10 25 50 \
   --use_lora \
   --lora_rank 64 \

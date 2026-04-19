@@ -30,18 +30,19 @@ declare -a VARIANT_FLAGS=(
 )
 declare -a VARIANT_NAMES=("" "T" "I" "V" "TI" "TV" "IV" "TIV")
 
+RUN_TAG=${RUN_TAG:-${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}
 FLAGS=${VARIANT_FLAGS[$SLURM_ARRAY_TASK_ID]}
 NAME=${VARIANT_NAMES[$SLURM_ARRAY_TASK_ID]}
 CKPT=/scratch/ram1g23/exp1_alignment/${NAME}/final_model/diffusion_pytorch_model.safetensors
-OUTPUT_DIR=/scratch/ram1g23/exp1_alignment/${NAME}/eval
+OUTPUT_DIR=/scratch/ram1g23/exp1_alignment/${NAME}/eval/${RUN_TAG}
 
 echo "Evaluating variant: ${NAME}  |  Checkpoint: ${CKPT}"
 
 python ../../evaluation_scripts/metrics_diff2flow.py \
   --checkpoint_path ${CKPT} \
-  --pretrained_model_path /scratch/ram1g23/Models/Cifar-10/ddpm_cifar10/final_model \
+  --pretrained_model_path /scratch/ram1g23/ddpm_cifar10_long2/final_model_ema \
   --dataset cifar10 \
-  --num_samples 50000 \
+  --num_samples 10000 \
   --step_counts 2 4 10 25 50 \
   --output_dir ${OUTPUT_DIR} \
   --scratch_dir /scratch/ram1g23/exp1_tmp_${NAME}_${SLURM_JOB_ID} \
