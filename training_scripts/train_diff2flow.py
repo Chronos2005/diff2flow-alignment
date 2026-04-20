@@ -22,8 +22,8 @@ from tqdm import tqdm
 from accelerate import Accelerator
 
 from shared.aligner import Diff2FlowAligner
-from shared.args import add_dataset_args, add_training_args, add_lora_args, add_diffusion_args, add_alignment_args
-from shared.lora import apply_lora, merge_lora
+from shared.args import add_common_args, add_dataset_args, add_training_args, add_lora_args, add_diffusion_args, add_alignment_args
+from shared.lora import apply_lora, save_merged
 from shared.datasets import DATASET_DEFAULTS, get_dataset, get_data_root
 from shared.training import make_dataloader, make_optimizer_and_scheduler
 from shared.utils import make_grid, tensor_to_pil
@@ -82,6 +82,7 @@ def parse_args():
 
     parser.add_argument("--pretrained_model_path", type=str, required=True,
                         help="Path to pretrained DDPM model directory (saved via save_pretrained)")
+    add_common_args(parser)
     add_dataset_args(parser, include_custom=False, dataset_required=True)
     # learning_rate_default=1e-5 (lower than pretraining since we're finetuning)
     add_training_args(parser, learning_rate_default=1e-5)
@@ -116,6 +117,9 @@ def main():
     accelerator = Accelerator()
     device = accelerator.device
 
+    from accelerate.utils import set_seed
+    set_seed(args.seed)
+
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
         os.makedirs(f"{args.output_dir}/samples", exist_ok=True)
@@ -144,11 +148,19 @@ def main():
     # 3) Optionally apply LoRA
     # -----------------------------------------------------------------------
     if args.use_lora:
-        num_replaced = apply_lora(model, rank=args.lora_rank, placement=args.lora_placement)
+        model, num_replaced = apply_lora(
+            model,
+            rank=args.lora_rank,
+            placement=args.lora_placement,
+            alpha=args.lora_alpha,
+        )
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
         total = sum(p.numel() for p in model.parameters())
+        effective_alpha = args.lora_alpha if args.lora_alpha is not None else args.lora_rank
         if accelerator.is_main_process:
-            print(f"LoRA applied: {num_replaced} layers replaced (rank={args.lora_rank})")
+            print(f"LoRA applied: {num_replaced} layers wrapped "
+                  f"(rank={args.lora_rank}, alpha={effective_alpha}, "
+                  f"scale={effective_alpha/args.lora_rank:.3f})")
             print(f"Trainable params: {trainable/1e6:.2f}M / {total/1e6:.2f}M "
                   f"({100*trainable/total:.1f}%)")
     else:
@@ -269,10 +281,9 @@ def main():
             ckpt_dir = f"{args.output_dir}/checkpoint_epoch_{epoch+1}"
             os.makedirs(ckpt_dir, exist_ok=True)
             if args.use_lora:
-                merge_lora(unwrapped)
-            unwrapped.save_pretrained(ckpt_dir)
-            if args.use_lora:
-                apply_lora(unwrapped, rank=args.lora_rank, placement=args.lora_placement)
+                save_merged(unwrapped, ckpt_dir)
+            else:
+                unwrapped.save_pretrained(ckpt_dir)
             torch.save({
                 "epoch": epoch + 1,
                 "global_step": global_step,
@@ -287,8 +298,9 @@ def main():
         final_dir = f"{args.output_dir}/final_model"
         os.makedirs(final_dir, exist_ok=True)
         if args.use_lora:
-            merge_lora(unwrapped)
-        unwrapped.save_pretrained(final_dir)
+            save_merged(unwrapped, final_dir)
+        else:
+            unwrapped.save_pretrained(final_dir)
         torch.save({
             "epoch": args.num_epochs,
             "global_step": global_step,
