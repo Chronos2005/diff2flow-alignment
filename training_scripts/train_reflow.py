@@ -27,22 +27,19 @@ from tqdm import tqdm
 from accelerate import Accelerator
 
 from shared.aligner import Diff2FlowAligner
-from shared.args import add_training_args, add_lora_args, add_diffusion_args
-from shared.lora import apply_lora
+from shared.args import add_common_args, add_training_args, add_diffusion_args
 from shared.training import build_unet, make_optimizer_and_scheduler
 from shared.utils import make_grid, tensor_to_pil
 
 
 # ---------------------------------------------------------------------------
-# Teacher sampling (frozen Diff2Flow model)
+# Teacher sampling
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
-def teacher_generate(teacher, aligner, batch_size, image_size, num_steps, device):
-    """
-    Run the teacher's ODE to produce (x0, x1) pairs.
-    Returns the original noise x0 and the generated image x1.
-    """
+def teacher_generate(teacher, batch_size, image_size, num_steps, device,
+                     teacher_type="diff2flow", aligner=None):
+    """Run the teacher ODE to produce (x0, x1) pairs."""
     shape = (batch_size, 3, image_size, image_size)
     x0 = torch.randn(shape, device=device)
     x = x0.clone()
@@ -51,13 +48,16 @@ def teacher_generate(teacher, aligner, batch_size, image_size, num_steps, device
     for i in range(num_steps):
         t_fm = torch.full((batch_size,), i * dt, device=device)
 
-        t_dm = aligner.t_fm_to_t_dm(t_fm)
-        alpha_t, sigma_t = aligner.get_alpha_sigma(t_dm)
-        x_dm = aligner.x_fm_to_x_dm(x, alpha_t, sigma_t)
-
-        t_dm_input = t_dm.long().clamp(0, aligner.T - 1)
-        eps_pred = teacher(x_dm, t_dm_input, return_dict=False)[0]
-        velocity = aligner.eps_to_velocity(eps_pred, x_dm, alpha_t, sigma_t)
+        if teacher_type == "fm":
+            t_scaled = t_fm * 999.0
+            velocity = teacher(x, t_scaled, return_dict=False)[0]
+        else:
+            t_dm = aligner.t_fm_to_t_dm(t_fm)
+            alpha_t, sigma_t = aligner.get_alpha_sigma(t_dm)
+            x_dm = aligner.x_fm_to_x_dm(x, alpha_t, sigma_t)
+            t_dm_input = t_dm.long().clamp(0, aligner.T - 1)
+            eps_pred = teacher(x_dm, t_dm_input, return_dict=False)[0]
+            velocity = aligner.eps_to_velocity(eps_pred, x_dm, alpha_t, sigma_t)
 
         x = x + dt * velocity
 
@@ -92,16 +92,19 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Reflow: straighten ODE trajectories from a trained Diff2Flow model")
 
-    # Teacher (frozen Diff2Flow)
+    add_common_args(parser)
+
+    # Teacher
     parser.add_argument("--teacher_checkpoint", type=str, required=True,
-                        help="Path to Diff2Flow checkpoint directory (saved with save_pretrained)")
-    parser.add_argument("--pretrained_model_path", type=str, required=True,
-                        help="Path to original DDPM model (for architecture)")
+                        help="Path to teacher checkpoint directory")
+    parser.add_argument("--teacher_type", type=str, default="diff2flow",
+                        choices=["diff2flow", "fm"],
+                        help="Teacher type: 'diff2flow' (default) or 'fm'")
+    parser.add_argument("--pretrained_model_path", type=str, default=None,
+                        help="DDPM model path for student init (required when teacher_type=diff2flow)")
     parser.add_argument("--teacher_num_steps", type=int, default=50,
                         help="Euler steps for teacher ODE rollouts (default: 50)")
 
-    # Teacher LoRA (if teacher was trained with LoRA)
-    add_lora_args(parser)
     add_diffusion_args(parser)
 
     # Student
@@ -140,6 +143,9 @@ def main():
     accelerator = Accelerator()
     device = accelerator.device
 
+    from accelerate.utils import set_seed
+    set_seed(args.seed)
+
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
         os.makedirs(f"{args.output_dir}/samples", exist_ok=True)
@@ -151,39 +157,24 @@ def main():
         print(f"Loading teacher from: {args.teacher_checkpoint}")
 
     teacher = UNet2DModel.from_pretrained(args.teacher_checkpoint)
-
-    # Check if teacher was trained with LoRA via training_state.pt
-    state_path = os.path.join(args.teacher_checkpoint, "training_state.pt")
-    teacher_lora = args.use_lora
-    teacher_lora_rank = args.lora_rank
-    teacher_lora_placement = args.lora_placement
-    if os.path.exists(state_path):
-        ts = torch.load(state_path, map_location="cpu", weights_only=False)
-        ckpt_args = ts.get("args", {})
-        teacher_lora = teacher_lora or ckpt_args.get("use_lora", False)
-        teacher_lora_rank = teacher_lora_rank or ckpt_args.get("lora_rank", 64)
-        teacher_lora_placement = teacher_lora_placement or ckpt_args.get("lora_placement", "all")
-
-    if teacher_lora:
-        apply_lora(teacher, rank=teacher_lora_rank, placement=teacher_lora_placement)
-        if accelerator.is_main_process:
-            print(f"Teacher LoRA: rank={teacher_lora_rank}, placement={teacher_lora_placement}")
-
     teacher = teacher.to(device)
     teacher.eval()
     for p in teacher.parameters():
         p.requires_grad_(False)
 
-    noise_scheduler = DDPMScheduler(num_train_timesteps=args.num_train_timesteps)
-    aligner = Diff2FlowAligner(noise_scheduler)
+    aligner = None
+    if args.teacher_type == "diff2flow":
+        noise_scheduler = DDPMScheduler(num_train_timesteps=args.num_train_timesteps)
+        aligner = Diff2FlowAligner(noise_scheduler)
 
     # -------------------------------------------------------------------
     # 2) Build student
     # -------------------------------------------------------------------
     if args.student_init == "pretrained":
+        init_path = args.pretrained_model_path or args.teacher_checkpoint
         if accelerator.is_main_process:
-            print(f"Student init: pretrained DDPM from {args.pretrained_model_path}")
-        student = UNet2DModel.from_pretrained(args.pretrained_model_path)
+            print(f"Student init: pretrained from {init_path}")
+        student = UNet2DModel.from_pretrained(init_path)
     else:
         if accelerator.is_main_process:
             print("Student init: random")
@@ -229,11 +220,13 @@ def main():
             # --- Generate (x0, x1) pairs from teacher ---
             with torch.no_grad():
                 x0, x1 = teacher_generate(
-                    teacher, aligner,
+                    teacher,
                     batch_size=args.train_batch_size,
                     image_size=args.image_size,
                     num_steps=args.teacher_num_steps,
                     device=device,
+                    teacher_type=args.teacher_type,
+                    aligner=aligner,
                 )
 
             # --- Straight-line FM loss on student ---
