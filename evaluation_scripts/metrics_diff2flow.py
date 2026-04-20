@@ -43,7 +43,6 @@ from shared.args import add_common_args, add_dataset_args, add_eval_args, add_lo
 from shared.evaluation import (
     prepare_real_images, compute_fid, generate_and_save_samples, print_summary, save_results
 )
-from shared.lora import apply_lora
 from inference_scripts.inference_diff2flow import sample_euler, sample_heun
 
 
@@ -99,10 +98,8 @@ def main():
 
     model = UNet2DModel.from_pretrained(args.pretrained_model_path)
 
-    if args.use_lora:
-        print(f"Applying LoRA (rank={args.lora_rank}, placement={args.lora_placement})")
-        apply_lora(model, rank=args.lora_rank, placement=args.lora_placement)
-
+    # LoRA checkpoints are saved already merged (see shared.lora.save_merged),
+    # so we load them as a plain UNet — no adapter wrapping at eval time.
     state_dict = load_safetensors(args.checkpoint_path, device="cpu")
     model.load_state_dict(state_dict)
     model = model.to(device)
@@ -126,8 +123,9 @@ def main():
     results = []
 
     for num_steps in sorted(args.step_counts):
+        nfe = num_steps * (2 if args.solver == "heun" else 1)
         print(f"\n{'='*60}")
-        print(f"Evaluating: {num_steps} Euler steps  (NFE = {num_steps})")
+        print(f"Evaluating: {num_steps} {args.solver} steps  (NFE = {nfe})")
         print(f"{'='*60}")
 
         sample_fn = lambda n, dev, s: sampler(model, aligner, n, args.image_size, num_steps, dev, s)
@@ -146,7 +144,6 @@ def main():
         time_per_image = total_time / args.num_samples
         images_per_second = args.num_samples / total_time
 
-        nfe = num_steps * (2 if args.solver == "heun" else 1)
         result = {
             "num_steps": num_steps,
             "nfe_per_image": nfe,
