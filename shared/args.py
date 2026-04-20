@@ -57,6 +57,9 @@ def add_lora_args(parser):
                         help="Use LoRA for parameter-efficient finetuning")
     parser.add_argument("--lora_rank", type=int, default=64,
                         help="LoRA rank (only used if --use_lora)")
+    parser.add_argument("--lora_alpha", type=float, default=None,
+                        help="LoRA alpha; effective scale = alpha/rank. "
+                             "Defaults to rank, giving scale=1.0")
     parser.add_argument("--lora_placement", type=str, default="all",
                         choices=["all", "attention", "feedforward"],
                         help="Which layer types to apply LoRA to (default: all)")
