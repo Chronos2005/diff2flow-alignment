@@ -29,8 +29,7 @@ from accelerate import Accelerator
 
 from shared.aligner import Diff2FlowAligner
 from shared.args import (add_common_args, add_dataset_args, add_training_args,
-                         add_lora_args, add_diffusion_args)
-from shared.lora import apply_lora
+                         add_diffusion_args)
 from shared.training import build_unet, make_dataloader, make_optimizer_and_scheduler
 from shared.datasets import DATASET_DEFAULTS, get_dataset, get_data_root
 from shared.utils import make_grid, tensor_to_pil
@@ -227,13 +226,14 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Progressive Distillation: iteratively halve FM sampling steps")
 
+    add_common_args(parser)
+
     # Teacher
     parser.add_argument("--teacher_checkpoint", type=str, required=True,
                         help="Path to the initial teacher checkpoint directory")
     parser.add_argument("--teacher_type", type=str, default="fm",
                         choices=["fm", "diff2flow"],
                         help="Type of teacher model (default: fm)")
-    add_lora_args(parser)   # used when teacher_type=diff2flow
     add_diffusion_args(parser)
 
     # Dataset
@@ -276,6 +276,9 @@ def main():
     accelerator = Accelerator()
     device = accelerator.device
 
+    from accelerate.utils import set_seed
+    set_seed(args.seed)
+
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
 
@@ -298,17 +301,6 @@ def main():
 
     aligner = None
     if args.teacher_type == "diff2flow":
-        state_path = os.path.join(args.teacher_checkpoint, "training_state.pt")
-        use_lora, lora_rank, lora_placement = args.use_lora, args.lora_rank, args.lora_placement
-        if os.path.exists(state_path):
-            ts        = torch.load(state_path, map_location="cpu", weights_only=False)
-            ckpt_args = ts.get("args", {})
-            use_lora      = use_lora      or ckpt_args.get("use_lora", False)
-            lora_rank     = lora_rank     or ckpt_args.get("lora_rank", 64)
-            lora_placement = lora_placement or ckpt_args.get("lora_placement", "all")
-        if use_lora:
-            apply_lora(teacher, rank=lora_rank, placement=lora_placement)
-            accelerator.print(f"Teacher LoRA: rank={lora_rank}, placement={lora_placement}")
         aligner = Diff2FlowAligner(DDPMScheduler(num_train_timesteps=args.num_train_timesteps))
 
     teacher = teacher.to(device).eval()
