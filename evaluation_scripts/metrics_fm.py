@@ -38,7 +38,7 @@ from shared.args import add_common_args, add_dataset_args, add_eval_args, add_me
 from shared.evaluation import (
     prepare_real_images, compute_fid, generate_and_save_samples, print_summary, save_results
 )
-from inference_scripts.inference_fm import sample_euler
+from inference_scripts.inference_fm import sample_euler, sample_heun
 
 
 def parse_args():
@@ -54,6 +54,10 @@ def parse_args():
                             output_dir_default="fm_eval",
                             scratch_dir_default="/scratch/ram1g23/fm_eval_tmp",
                             step_counts_default=[2, 4, 10, 25, 50, 100])
+
+    parser.add_argument("--solver", type=str, default="euler",
+                        choices=["euler", "heun"],
+                        help="ODE solver. Heun uses 2x NFE per step.")
 
     add_common_args(parser)
     return parser.parse_args()
@@ -84,12 +88,17 @@ def main():
 
     results = []
 
+    solver = args.solver
     for num_steps in sorted(args.step_counts):
+        nfe = num_steps * (2 if solver == "heun" else 1)
         print(f"\n{'='*60}")
-        print(f"Evaluating: {num_steps} Euler steps  (NFE = {num_steps})")
+        print(f"Evaluating: {num_steps} {solver.capitalize()} steps  (NFE = {nfe})")
         print(f"{'='*60}")
 
-        sample_fn = lambda n, dev, s: sample_euler(model, n, args.image_size, num_steps, dev, s)
+        if solver == "heun":
+            sample_fn = lambda n, dev, s, _ns=num_steps: sample_heun(model, n, args.image_size, _ns, dev, s)
+        else:
+            sample_fn = lambda n, dev, s, _ns=num_steps: sample_euler(model, n, args.image_size, _ns, dev, s)
         sample_dir, total_time = generate_and_save_samples(
             sample_fn,
             num_samples=args.num_samples,
@@ -107,7 +116,8 @@ def main():
 
         result = {
             "num_steps": num_steps,
-            "nfe_per_image": num_steps,
+            "solver": solver,
+            "nfe_per_image": nfe,
             "fid": round(fid_score, 4),
             "total_time_s": round(total_time, 2),
             "time_per_image_s": round(time_per_image, 5),
@@ -116,7 +126,7 @@ def main():
         }
         results.append(result)
 
-        print(f"\n  Steps (NFE): {num_steps}")
+        print(f"\n  Steps: {num_steps}  NFE: {nfe}  Solver: {solver}")
         print(f"  FID:         {fid_score:.4f}")
         print(f"  Time/image:  {time_per_image:.5f}s")
         print(f"  Images/sec:  {images_per_second:.2f}")
@@ -127,6 +137,7 @@ def main():
     print_summary(results)
     save_results(results, {
         "model_path": args.model_path,
+        "solver": solver,
         "num_samples": args.num_samples,
         "image_size": args.image_size,
         "seed": args.seed,
