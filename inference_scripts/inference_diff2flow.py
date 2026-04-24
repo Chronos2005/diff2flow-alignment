@@ -93,7 +93,9 @@ def sample_heun(model, aligner, num_samples, image_size, num_steps, device, seed
     dt = 1.0 / num_steps
     for i in range(num_steps):
         t = i * dt
-        t_next = (i + 1) * dt
+        # Training samples t ~ U[0, 1), so t=1.0 is OOD. Clamp the corrector's
+        # query point to stay within the training support.
+        t_next = min((i + 1) * dt, 1.0 - 1e-5)
 
         # --- Eval 1: velocity at current x(t) ---
         t_fm = torch.full((num_samples,), t, device=device)
