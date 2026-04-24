@@ -57,12 +57,16 @@ def sample_heun(model, num_samples, image_size, num_steps, device, seed=None):
     dt = 1.0 / num_steps
     for i in range(num_steps):
         t = i * dt
-        # Training samples t ~ U[0, 1), so t=1.0 is OOD. Clamp the corrector's
-        # query point to stay within the training support.
         t_next = min((i + 1) * dt, 1.0 - 1e-5)
 
         t_scaled = torch.full((num_samples,), t * 999.0, device=device)
         v1 = model(x, t_scaled, return_dict=False)[0]
+
+        # Final step: skip the corrector — t_next≈1 is at the edge of the
+        # training distribution (t ~ U[0,1)), making v2 unreliable.
+        if i == num_steps - 1:
+            x = x + v1 * dt
+            continue
 
         x_pred = x + v1 * dt
 

@@ -106,7 +106,13 @@ def sample_heun(model, aligner, num_samples, image_size, num_steps, device, seed
         eps_pred = model(x_dm, t_dm_input, return_dict=False)[0]
         v1 = aligner.eps_to_velocity(eps_pred, x_dm, alpha_t, sigma_t)
 
-        x_pred = x + dt * v1  # Euler predictor step
+        # Final step: skip the corrector — t_next≈1 maps to t_dm≈0 (clean-data
+        # end), making the model OOD on the Euler-predicted (still noisy) input.
+        if i == num_steps - 1:
+            x = x + dt * v1
+            continue
+
+        x_pred = x + dt * v1
 
         # --- Eval 2: velocity at predicted x(t+dt) ---
         t_fm_next = torch.full((num_samples,), t_next, device=device)
