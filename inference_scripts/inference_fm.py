@@ -19,6 +19,8 @@ def parse_args():
     parser.add_argument("--model_path", type=str, required=True,
                         help="Path to the saved model directory (e.g. flow_matching_cifar10/final_model)")
     add_inference_args(parser, output_dir_default="fm_samples", num_steps_default=[100])
+    parser.add_argument("--solver", type=str, default="euler", choices=["euler", "heun"],
+                        help="ODE solver. Heun uses 2x NFE per step.")
     add_common_args(parser)
 
     return parser.parse_args()
@@ -43,7 +45,37 @@ def sample_euler(model, num_samples, image_size, num_steps, device, seed=None):
     return x.clamp(-1, 1)
 
 
-def generate_samples(model, num_images, image_size, num_steps, batch_size, device, seed):
+@torch.no_grad()
+def sample_heun(model, num_samples, image_size, num_steps, device, seed=None):
+    """Generate images via Heun's method on the FM ODE (NFE = 2 * num_steps)."""
+    if seed is not None:
+        torch.manual_seed(seed)
+
+    shape = (num_samples, 3, image_size, image_size)
+    x = torch.randn(shape, device=device)
+
+    dt = 1.0 / num_steps
+    for i in range(num_steps):
+        t = i * dt
+        # Training samples t ~ U[0, 1), so t=1.0 is OOD. Clamp the corrector's
+        # query point to stay within the training support.
+        t_next = min((i + 1) * dt, 1.0 - 1e-5)
+
+        t_scaled = torch.full((num_samples,), t * 999.0, device=device)
+        v1 = model(x, t_scaled, return_dict=False)[0]
+
+        x_pred = x + v1 * dt
+
+        t_next_scaled = torch.full((num_samples,), t_next * 999.0, device=device)
+        v2 = model(x_pred, t_next_scaled, return_dict=False)[0]
+
+        x = x + 0.5 * (v1 + v2) * dt
+
+    return x.clamp(-1, 1)
+
+
+def generate_samples(model, num_images, image_size, num_steps, batch_size, device, seed, solver="euler"):
+    sample_fn = sample_heun if solver == "heun" else sample_euler
     all_samples = []
     remaining = num_images
     batch_idx = 0
@@ -52,7 +84,7 @@ def generate_samples(model, num_images, image_size, num_steps, batch_size, devic
         bs = min(batch_size, remaining)
         batch_seed = seed + batch_idx if seed is not None else None
 
-        samples = sample_euler(
+        samples = sample_fn(
             model,
             num_samples=bs,
             image_size=image_size,
@@ -80,7 +112,8 @@ def main():
     model.eval()
 
     for num_steps in args.num_steps:
-        print(f"\n--- Generating {args.num_images} images with {num_steps} Euler steps ---")
+        nfe = num_steps * (2 if args.solver == "heun" else 1)
+        print(f"\n--- Generating {args.num_images} images with {num_steps} {args.solver.capitalize()} steps (NFE={nfe}) ---")
 
         start = time.time()
         samples = generate_samples(
@@ -91,6 +124,7 @@ def main():
             batch_size=args.batch_size,
             device=device,
             seed=args.seed,
+            solver=args.solver,
         )
         elapsed = time.time() - start
 
