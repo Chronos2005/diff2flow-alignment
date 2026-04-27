@@ -40,7 +40,7 @@ RUN_TAG=${RUN_TAG:-${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}
 python ../../evaluation_scripts/visualise_trajectory.py \
     --ddpm_model      /scratch/ram1g23/ddpm_cifar10_long2/final_model_ema \
     --flow_model      /scratch/ram1g23/fm_cifar10_long2/final_model_ema \
-    --diff2flow_model /scratch/ram1g23/exp2_lora_rank/rank64/final_model\
+    --diff2flow_model /scratch/ram1g23/exp1_alignment/TIV/final_model_ema \
     --output_dir      /scratch/ram1g23/trajectory_vis/${RUN_TAG} \
     --num_samples     20 \
     --num_steps       50 \

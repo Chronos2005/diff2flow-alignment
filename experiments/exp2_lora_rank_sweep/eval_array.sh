@@ -24,7 +24,7 @@ RUN_TAG=${RUN_TAG:-${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}
 IDX=$SLURM_ARRAY_TASK_ID
 NAME=${NAMES[$IDX]}
 RANK=${RANKS[$IDX]}
-CKPT=/scratch/ram1g23/exp2_lora_rank/${NAME}/final_model/diffusion_pytorch_model.safetensors
+CKPT=/scratch/ram1g23/exp2_lora_rank/${NAME}/final_model_ema/diffusion_pytorch_model.safetensors
 OUTPUT_DIR=/scratch/ram1g23/exp2_lora_rank/${NAME}/eval/${RUN_TAG}
 
 if [ $IDX -eq 7 ]; then

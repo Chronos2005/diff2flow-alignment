@@ -35,18 +35,18 @@ echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $(hostname)"
 echo "Checkpoint: ${CKPT}"
 
-# --- Euler solver ---
-echo ""
-echo "===== Running Euler solver ====="
-python ../../evaluation_scripts/metrics_diff2flow.py \
-  --checkpoint_path ${CKPT} \
-  --pretrained_model_path ${PRETRAIN} \
-  --dataset cifar10 \
-  --num_samples 10000 \
-  --step_counts 2 4 8 16 32 \
-  --solver euler \
-  --output_dir /scratch/ram1g23/exp4_solver/euler/${RUN_TAG} \
-  --scratch_dir /scratch/ram1g23/exp4_tmp_euler_${SLURM_JOB_ID}
+# # --- Euler solver ---
+# echo ""
+# echo "===== Running Euler solver ====="
+# python ../../evaluation_scripts/metrics_diff2flow.py \
+#   --checkpoint_path ${CKPT} \
+#   --pretrained_model_path ${PRETRAIN} \
+#   --dataset cifar10 \
+#   --num_samples 10000 \
+#   --step_counts 2 4 8 16 32 \
+#   --solver euler \
+#   --output_dir /scratch/ram1g23/exp4_solver/euler/${RUN_TAG} \
+#   --scratch_dir /scratch/ram1g23/exp4_tmp_euler_${SLURM_JOB_ID}
 
 # --- Heun solver (half the steps for same NFE) ---
 echo ""
@@ -66,16 +66,16 @@ python ../../evaluation_scripts/metrics_diff2flow.py \
 # ---------------------------------------------------------------------------
 
 # --- FM Euler baseline ---
-echo ""
-echo "===== Running FM baseline — Euler solver ====="
-python ../../evaluation_scripts/metrics_fm.py \
-  --model_path ${FM_MODEL} \
-  --dataset cifar10 \
-  --num_samples 10000 \
-  --step_counts 2 4 8 16 32 \
-  --solver euler \
-  --output_dir /scratch/ram1g23/exp4_solver/fm_euler/${RUN_TAG} \
-  --scratch_dir /scratch/ram1g23/exp4_tmp_fm_euler_${SLURM_JOB_ID}
+# echo ""
+# echo "===== Running FM baseline — Euler solver ====="
+# python ../../evaluation_scripts/metrics_fm.py \
+#   --model_path ${FM_MODEL} \
+#   --dataset cifar10 \
+#   --num_samples 10000 \
+#   --step_counts 2 4 8 16 32 \
+#   --solver euler \
+#   --output_dir /scratch/ram1g23/exp4_solver/fm_euler/${RUN_TAG} \
+#   --scratch_dir /scratch/ram1g23/exp4_tmp_fm_euler_${SLURM_JOB_ID}
 
 # --- FM Heun baseline (half steps for same NFE) ---
 echo ""

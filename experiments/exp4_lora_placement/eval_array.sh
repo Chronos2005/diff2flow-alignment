@@ -23,7 +23,7 @@ declare -a NAMES=("" "lora_all" "lora_attention" "lora_feedforward")
 RUN_TAG=${RUN_TAG:-${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}
 PLACEMENT=${PLACEMENTS[$SLURM_ARRAY_TASK_ID]}
 NAME=${NAMES[$SLURM_ARRAY_TASK_ID]}
-CKPT=/scratch/ram1g23/exp5_placement/${NAME}/final_model/diffusion_pytorch_model.safetensors
+CKPT=/scratch/ram1g23/exp5_placement/${NAME}/final_model_ema/diffusion_pytorch_model.safetensors
 OUTPUT_DIR=/scratch/ram1g23/exp5_placement/${NAME}/eval/${RUN_TAG}
 
 echo "Evaluating placement: ${PLACEMENT}  |  Checkpoint: ${CKPT}"

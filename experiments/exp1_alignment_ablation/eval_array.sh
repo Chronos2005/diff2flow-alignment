@@ -33,7 +33,7 @@ declare -a VARIANT_NAMES=("" "T" "I" "V" "TI" "TV" "IV" "TIV")
 RUN_TAG=${RUN_TAG:-${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}
 FLAGS=${VARIANT_FLAGS[$SLURM_ARRAY_TASK_ID]}
 NAME=${VARIANT_NAMES[$SLURM_ARRAY_TASK_ID]}
-CKPT=/scratch/ram1g23/exp1_alignment/${NAME}/final_model/diffusion_pytorch_model.safetensors
+CKPT=/scratch/ram1g23/exp1_alignment/${NAME}/final_model_ema/diffusion_pytorch_model.safetensors
 OUTPUT_DIR=/scratch/ram1g23/exp1_alignment/${NAME}/eval/${RUN_TAG}
 
 echo "Evaluating variant: ${NAME}  |  Checkpoint: ${CKPT}"
