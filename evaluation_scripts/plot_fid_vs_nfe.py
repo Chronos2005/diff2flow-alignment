@@ -2,9 +2,9 @@
 FID vs NFE line plot — paper Figure (RQ3).
 
 Three curves:
-  - DDPM (DDIM sampler)          results/exp0_baselines/results.csv
-  - Flow Matching (from scratch)  results/exp0_baselines/results.csv
-  - Diff2Flow (ours)              job_scripts/diff2flow_eval/evaluation_results.csv
+  - DDPM (DDIM sampler)          ddpm_853268
+  - Flow Matching (from scratch)  fm_853101
+  - Diff2Flow (alignment only)    alignment_only_853103
 
 Usage:
     python evaluation_scripts/plot_fid_vs_nfe.py [--out figures/fid_vs_nfe.pdf]
@@ -22,20 +22,23 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 DDPM_DDIM = {
-    "nfe":  [2,      4,      10,     25,     50,     100,    1000],
-    "fid":  [181.09, 99.28,  55.63,  42.41,  39.09,  37.66,  38.06],
+    "nfe":  [2,        4,       10,      25,      50,      100,     1000],
+    "fid":  [237.0774, 74.6178, 29.9521, 22.3153, 21.3021, 21.6954, 18.9246],
 }
 # NFE=1000 is the ancestral sampler — plotted as a distinct marker
+# NFE 2/4 from job 853268 re-run; 10–250 from results/exp0_baselines/results.csv
 
 FM_SCRATCH = {
-    "nfe":  [2,      4,     10,    25,    50,    100],
-    "fid":  [214.15, 82.39, 49.71, 44.06, 42.69, 41.99],
+    "nfe":  [2,        4,       10,      25,      50,      100],
+    "fid":  [187.2398, 75.3885, 30.5979, 21.8021, 20.6279, 20.7843],
 }
+# fm_853101
 
-DIFF2FLOW = {
-    "nfe":  [2,      4,     10,    25,    50,    100],
-    "fid":  [168.50, 96.67, 49.57, 39.73, 37.04, 35.47],
+ALIGNMENT_ONLY = {
+    "nfe":  [2,        4,       10,      25,      50,      100],
+    "fid":  [209.2463, 90.0449, 38.659,  28.7515, 27.5729, 27.8026],
 }
+# alignment_only_853103
 
 
 def log_interp_crossover(nfe_a, fid_a, nfe_b, fid_b):
@@ -100,19 +103,18 @@ def main(out_path: Path) -> None:
             color=FM_COLOR, marker="^", label="FM (trained from scratch)")
 
     # -----------------------------------------------------------------------
-    # Diff2Flow
+    # Diff2Flow (alignment only)
     # -----------------------------------------------------------------------
-    ax.plot(DIFF2FLOW["nfe"], DIFF2FLOW["fid"],
-            color=D2F_COLOR, marker="o", label="Diff2Flow (ours)")
+    ax.plot(ALIGNMENT_ONLY["nfe"], ALIGNMENT_ONLY["fid"],
+            color=D2F_COLOR, marker="o", label="Diff2Flow (no-fine-tuning)")
 
     # -----------------------------------------------------------------------
     # Crossover annotations
     # -----------------------------------------------------------------------
-    # Shared NFE range for crossover detection: 2–100
-    shared_nfe = [2, 4, 10, 25, 50, 100]
-    ddpm_shared = [181.09, 99.28, 55.63, 42.41, 39.09, 37.66]
-    fm_shared   = [214.15, 82.39, 49.71, 44.06, 42.69, 41.99]
-    d2f_shared  = [168.50, 96.67, 49.57, 39.73, 37.04, 35.47]
+    shared_nfe  = ALIGNMENT_ONLY["nfe"]
+    ddpm_shared = DDPM_DDIM["fid"][:-1]   # 2–100, drop ancestral
+    fm_shared   = FM_SCRATCH["fid"]
+    d2f_shared  = ALIGNMENT_ONLY["fid"]
 
     # Diff2Flow vs FM scratch crossover
     d2f_vs_fm = log_interp_crossover(
@@ -121,10 +123,7 @@ def main(out_path: Path) -> None:
     )
     if d2f_vs_fm:
         cx = d2f_vs_fm[0]
-        # Interpolate FID at crossover
-        cy = np.interp(np.log(cx),
-                       np.log(shared_nfe),
-                       d2f_shared)
+        cy = np.interp(np.log(cx), np.log(shared_nfe), d2f_shared)
         ax.axvline(cx, color="grey", linestyle=":", linewidth=1.0, alpha=0.7)
         ax.annotate(
             f"D2F ≈ FM\n(NFE≈{cx:.0f})",
@@ -135,8 +134,7 @@ def main(out_path: Path) -> None:
             arrowprops=dict(arrowstyle="->", color="grey", lw=0.8),
         )
 
-    # Diff2Flow vs DDPM: already better at NFE=2 — annotate with bracket/note
-    # (no in-range crossover; annotate the gap at a mid-range NFE instead)
+    # Diff2Flow vs DDPM gap at NFE=25
     gap_nfe = 25
     ddpm_y_at_25 = np.interp(np.log(gap_nfe), np.log(shared_nfe), ddpm_shared)
     d2f_y_at_25  = np.interp(np.log(gap_nfe), np.log(shared_nfe), d2f_shared)
@@ -155,7 +153,7 @@ def main(out_path: Path) -> None:
     # -----------------------------------------------------------------------
     ax.set_xscale("log")
     ax.set_xlim(1.5, 1500)
-    ax.set_ylim(25, 230)
+    ax.set_ylim(15, 260)
 
     ax.xaxis.set_major_formatter(ticker.FuncFormatter(
         lambda x, _: f"{int(x)}" if x >= 1 else f"{x:.1f}"
