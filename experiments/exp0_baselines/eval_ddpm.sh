@@ -53,7 +53,7 @@ python ../../evaluation_scripts/metrics_ddpm.py \
   --sampler         ddim \
   --dataset         cifar10 \
   --num_samples     10000 \
-  --step_counts     10 25 50 100 250 \
+  --step_counts     2  4 10 25 50 100 250 \
   --output_dir      ${OUTPUT} \
   --scratch_dir     ${SCRATCH_BASE}_ddim
 
